@@ -1,12 +1,17 @@
-# spree-paypal_checkout
+# spree-paypal_platform
 
 PayPal Checkout for Spree 5.6+, as a single payment method covering the PayPal
 wallet, Apple Pay, and Card Fields.
 
-This is Aypex's own gem, published as `spree-paypal_checkout`. It is **not**
-the official `spree_paypal_checkout` gem. It started from that extension
-(including the VAT `AMOUNT_MISMATCH` fix and storefront-owned address) and
-adds Apple Pay as a funding source of the same gateway.
+This is Aypex's own gem, **published as `spree-paypal_platform`**. It is **not**
+the official `spree_paypal_checkout` gem. RubyGems treats `-` and `_` as the
+same name, so `spree-paypal_checkout` was rejected as too similar. The GitHub
+repo stays `aypex-io/spree-paypal_checkout`; `require "spree/paypal_checkout"`
+and `Spree::PaypalCheckout` are unchanged.
+
+It started from that official extension (including the VAT `AMOUNT_MISMATCH`
+fix and storefront-owned address) and adds Apple Pay as a funding source of
+the same gateway.
 
 ## What it is
 
@@ -29,7 +34,7 @@ wallets (Venmo, Google Pay, …) should follow the same pattern.
 ## Installation
 
 ```ruby
-gem 'spree-paypal_checkout'
+gem 'spree-paypal_platform'
 ```
 
 ```bash
@@ -89,7 +94,7 @@ Replace the GitHub pin:
 gem 'spree_paypal_checkout', github: 'aypex-io/spree_paypal_checkout', branch: 'tongkat-fitness'
 
 # after
-gem 'spree-paypal_checkout'
+gem 'spree-paypal_platform'
 ```
 
 Then run the install generator and bump the storefront's

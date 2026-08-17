@@ -4,12 +4,14 @@ require_relative 'lib/spree/paypal_checkout/version'
 
 Gem::Specification.new do |s|
   s.platform    = Gem::Platform::RUBY
-  s.name        = 'spree-paypal_checkout'
+  s.name        = 'spree-paypal_platform'
   s.version     = Spree::PaypalCheckout::VERSION
   s.summary     = 'PayPal Checkout for Spree, including Apple Pay and Card Fields'
   s.description = 'A Spree 5.6+ payment method for PayPal Checkout. Creates and ' \
                   'captures PayPal Orders via payment sessions, pins the storefront ' \
-                  'address, and records PayPal wallet, Apple Pay, and card sources.'
+                  'address, and records PayPal wallet, Apple Pay, and card sources. ' \
+                  'Published as spree-paypal_platform because RubyGems rejects names ' \
+                  'too similar to the official spree_paypal_checkout gem.'
   s.required_ruby_version = '>= 3.3'
 
   s.author   = 'Aypex'

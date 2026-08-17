@@ -2,6 +2,7 @@
 # Publishes to RubyGems.org via Trusted Publishing (OIDC) when a v* tag is
 # pushed. Requires a trusted publisher registered on RubyGems.org for this
 # gem with:
+#   gem name    spree-paypal_platform
 #   owner       aypex-io
 #   repository  spree-paypal_checkout
 #   workflow    release.yml

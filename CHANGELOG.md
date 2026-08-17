@@ -2,9 +2,17 @@
 
 All notable changes to this project are documented in this file.
 
+## 5.0.1
+
+Published name is **`spree-paypal_platform`**. RubyGems rejected
+`spree-paypal_checkout` as too similar to the official
+`spree_paypal_checkout`. Require path and constants are unchanged
+(`spree/paypal_checkout` → `Spree::PaypalCheckout`).
+
 ## 5.0.0
 
-First Aypex release of `spree-paypal_checkout`.
+First Aypex release. Intended published name `spree-paypal_checkout` was
+never accepted by RubyGems; see 5.0.1.
 
 ### Audit follow-up
 
