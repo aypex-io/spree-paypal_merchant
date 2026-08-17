@@ -261,7 +261,7 @@ module Spree
 
           JSON.parse(response.body)['client_token']
         rescue Net::OpenTimeout, Net::ReadTimeout, SocketError, JSON::ParserError, Errno::ECONNREFUSED => e
-          Rails.logger.warn("[spree-paypal_checkout] client token generation failed: #{e.message}")
+          Rails.logger.warn("[spree-paypal_platform] client token generation failed: #{e.message}")
           nil
         end
 

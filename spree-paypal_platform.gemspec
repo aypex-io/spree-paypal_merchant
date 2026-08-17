@@ -16,7 +16,7 @@ Gem::Specification.new do |s|
 
   s.author   = 'Aypex'
   s.email    = 'hello@aypex.io'
-  s.homepage = 'https://github.com/aypex-io/spree-paypal_checkout'
+  s.homepage = 'https://github.com/aypex-io/spree-paypal_platform'
   s.license  = 'MIT'
 
   s.metadata = {

@@ -6,7 +6,7 @@ wallet, Apple Pay, and Card Fields.
 This is Aypex's own gem, **published as `spree-paypal_platform`**. It is **not**
 the official `spree_paypal_checkout` gem. RubyGems treats `-` and `_` as the
 same name, so `spree-paypal_checkout` was rejected as too similar. The GitHub
-repo stays `aypex-io/spree-paypal_checkout`; `require "spree/paypal_checkout"`
+repo is `aypex-io/spree-paypal_platform`; `require "spree/paypal_checkout"`
 and `Spree::PaypalCheckout` are unchanged.
 
 It started from that official extension (including the VAT `AMOUNT_MISMATCH`

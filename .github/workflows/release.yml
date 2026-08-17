@@ -4,7 +4,7 @@
 # gem with:
 #   gem name    spree-paypal_platform
 #   owner       aypex-io
-#   repository  spree-paypal_checkout
+#   repository  spree-paypal_platform
 #   workflow    release.yml
 #   environment release
 name: Release
