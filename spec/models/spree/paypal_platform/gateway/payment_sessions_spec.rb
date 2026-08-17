@@ -67,9 +67,13 @@ RSpec.describe Spree::PaypalPlatform::Gateway::PaymentSessions do
     let(:response_data) { double(status: 'COMPLETED', as_json: captured_data) }
     let(:response) { double(data: response_data) }
 
+    let(:orders_api) { double }
+    let(:fetched_data) { double(status: 'APPROVED', as_json: { 'status' => 'APPROVED' }) }
+    let(:fetched) { double(data: fetched_data) }
+
     before do
-      orders_api = double
       allow(gateway).to receive(:client).and_return(double(orders: orders_api))
+      allow(orders_api).to receive(:get_order).and_return(fetched)
       allow(orders_api).to receive(:capture_order).and_return(response)
     end
 
@@ -79,6 +83,16 @@ RSpec.describe Spree::PaypalPlatform::Gateway::PaymentSessions do
       end.to change(Spree::Payment, :count).by(1)
 
       expect(payment_session.reload.status).to eq('completed')
+    end
+
+    context 'when PayPal has already captured (Apple Pay confirmOrder)' do
+      let(:fetched_data) { double(status: 'COMPLETED', as_json: captured_data) }
+
+      it 'does not capture again' do
+        expect(orders_api).not_to receive(:capture_order)
+        gateway.complete_payment_session(payment_session: payment_session)
+        expect(payment_session.reload.status).to eq('completed')
+      end
     end
 
     context 'when capture status is not COMPLETED' do
@@ -92,8 +106,6 @@ RSpec.describe Spree::PaypalPlatform::Gateway::PaymentSessions do
 
     context 'when PayPal API raises an error' do
       before do
-        orders_api = double
-        allow(gateway).to receive(:client).and_return(double(orders: orders_api))
         allow(orders_api).to receive(:capture_order).and_raise(
           PaypalServerSdk::APIException.new('Capture failed', double(status_code: 422))
         )

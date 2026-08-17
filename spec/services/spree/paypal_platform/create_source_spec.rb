@@ -103,6 +103,16 @@ RSpec.describe Spree::PaypalPlatform::CreateSource do
       end
     end
 
+    context 'with an empty PayPal wallet hash' do
+      let(:paypal_payment_source) { { 'paypal' => {} } }
+
+      subject { described_class.new(paypal_payment_source: paypal_payment_source, gateway: gateway, order: order).call }
+
+      it 'creates a PayPal payment source instead of raising' do
+        expect { subject }.to change(Spree::PaypalPlatform::PaymentSources::Paypal, :count).by(1)
+      end
+    end
+
     context 'with an unknown wallet' do
       it 'raises ArgumentError' do
         expect do

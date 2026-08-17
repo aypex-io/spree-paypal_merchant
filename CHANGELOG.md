@@ -1,5 +1,12 @@
 # Changelog
 
+## 5.1.2
+
+- Completing a session GETs the PayPal order first and skips capture when
+  it is already `COMPLETED` (Apple Pay `confirmOrder`).
+- `CreateSource` accepts an empty `payment_source.paypal` hash from the
+  create-order echo so checkout can finish after PayPal has taken payment.
+
 ## 5.1.1
 
 First release.

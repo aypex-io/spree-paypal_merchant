@@ -27,7 +27,7 @@ module Spree
       # @raise [ArgumentError] when the payload has no known wallet key
       #
       def call
-        if paypal_payment_source[:paypal].present?
+        if paypal_payment_source.key?(:paypal)
           create_paypal_source
         elsif paypal_payment_source[:apple_pay].present?
           create_apple_pay_source
@@ -43,10 +43,11 @@ module Spree
       attr_reader :gateway, :user, :paypal_payment_source, :order
 
       def create_paypal_source
-        wallet = paypal_payment_source[:paypal]
+        wallet = paypal_payment_source[:paypal] || {}
+        profile_id = wallet[:account_id].presence || "paypal-#{order&.number || 'guest'}"
         source = PaymentSources::Paypal.find_or_initialize_by(
           payment_method: gateway,
-          gateway_payment_profile_id: wallet[:account_id]
+          gateway_payment_profile_id: profile_id
         )
         source.update!(
           user: user,

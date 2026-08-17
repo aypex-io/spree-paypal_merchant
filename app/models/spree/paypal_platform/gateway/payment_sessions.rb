@@ -89,11 +89,15 @@ module Spree
         #
         def complete_payment_session(payment_session:, **_unused)
           paypal_order_id = payment_session.external_id
+          lookup = { 'id' => paypal_order_id, 'prefer' => 'return=representation' }
 
-          response = client.orders.capture_order({
-                                                   'id' => paypal_order_id,
-                                                   'prefer' => 'return=representation'
-                                                 })
+          fetched = client.orders.get_order(lookup)
+          response =
+            if fetched.data.status == 'COMPLETED'
+              fetched
+            else
+              client.orders.capture_order(lookup)
+            end
 
           payment_session.update!(external_data: response.data.as_json)
 
