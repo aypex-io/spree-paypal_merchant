@@ -17,6 +17,6 @@ class CreateSpreePaypalCheckoutOrders < ActiveRecord::Migration[7.2]
       t.timestamps
     end
 
-    add_index :spree_paypal_checkout_orders, [:order_id, :paypal_id], unique: true
+    add_index :spree_paypal_checkout_orders, %i[order_id paypal_id], unique: true
   end
 end

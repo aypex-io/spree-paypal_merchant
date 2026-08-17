@@ -38,7 +38,6 @@ Metrics/PerceivedComplexity:
 
 Naming/FileName:
   Exclude:
-    - 'lib/spree-paypal_checkout.rb'
     - 'lib/spree-paypal_platform.rb'
 
 Naming/VariableNumber:

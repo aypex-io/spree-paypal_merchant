@@ -21,7 +21,7 @@ task :test_app do
   # Must be the require path, not the gem name: spree_core's common:test_app
   # does a literal `require ENV['LIB_NAME']` and constantizes
   # "#{LIB_NAME.camelize}::Generators::InstallGenerator".
-  ENV['LIB_NAME'] = 'spree/paypal_checkout'
+  ENV['LIB_NAME'] = 'spree/paypal_platform'
   ENV['DB'] ||= 'postgres'
   Rake::Task['extension:test_app'].execute(install_storefront: true, install_admin: true)
 end

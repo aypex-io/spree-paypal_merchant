@@ -3,22 +3,19 @@
 PayPal Checkout for Spree 5.6+, as a single payment method covering the PayPal
 wallet, Apple Pay, and Card Fields.
 
-This is Aypex's own gem, **published as `spree-paypal_platform`**. It is **not**
-the official `spree_paypal_checkout` gem. RubyGems treats `-` and `_` as the
-same name, so `spree-paypal_checkout` was rejected as too similar. The GitHub
-repo is `aypex-io/spree-paypal_platform`; `require "spree/paypal_checkout"`
-and `Spree::PaypalCheckout` are unchanged.
+Published gem: **`spree-paypal_platform`**  
+Require: **`spree/paypal_platform`**  
+Constant: **`Spree::PaypalPlatform`**
 
-It started from that official extension (including the VAT `AMOUNT_MISMATCH`
-fix and storefront-owned address) and adds Apple Pay as a funding source of
-the same gateway.
+This is not the official `spree_paypal_checkout` gem. It started from that
+extension (VAT `AMOUNT_MISMATCH` guard, storefront-owned address) and adds
+Apple Pay as a funding source of the same gateway.
 
 ## What it is
 
-- One `Spree::PaypalCheckout::Gateway` payment method.
+- One `Spree::PaypalPlatform::Gateway` payment method.
 - Checkout goes through Spree's **Store API v3 payment sessions**
-  (`POST /api/v3/store/carts/:id/payment_sessions` → complete). There is no
-  legacy `/api/v2/storefront/paypal_orders` controller.
+  (`POST /api/v3/store/carts/:id/payment_sessions` → complete).
 - The storefront owns the address. The gem pins it with
   `SET_PROVIDED_ADDRESS` so PayPal does not re-collect it.
 - Amount breakdown sends **only `additional_tax_total`**. Sending full
@@ -27,9 +24,8 @@ the same gateway.
   [`paypal-server-sdk`](https://github.com/paypal/PayPal-Ruby-Server-SDK) gem
   (`~> 2.3`).
 
-Apple Pay is **not** a second payment method and **not** a Spree Integration.
-It is a `payment_source.apple_pay` on the same Checkout order. Extra PayPal
-wallets (Venmo, Google Pay, …) should follow the same pattern.
+Apple Pay is not a second payment method and not a Spree Integration. It is
+a `payment_source.apple_pay` on the same Checkout order.
 
 ## Installation
 
@@ -39,7 +35,7 @@ gem 'spree-paypal_platform'
 
 ```bash
 bundle install
-bin/rails g spree:paypal_checkout:install
+bin/rails g spree:paypal_platform:install
 ```
 
 The generator copies the migrations. Pass `--auto-run-migrations` to skip the
@@ -67,27 +63,20 @@ https://<store>/api/v3/webhooks/payments/<prefixed-payment-method-id>
 2. Register every storefront domain (and subdomain) that will show the button
    in the [PayPal Apple Pay domain
    registration](https://developer.paypal.com/docs/checkout/apm/apple-pay/)
-   dashboard. Unregistered domains are rejected by Apple.
+   dashboard.
 3. Headless storefronts load the PayPal JS SDK with `components=applepay`
-   (or `buttons,applepay,card-fields`) and render Apple's `ApplePaySession`.
-   The gem records the captured `payment_source.apple_pay` as
-   `Spree::PaypalCheckout::PaymentSources::ApplePay`.
-4. Safari + HTTPS only. `localhost` will not work; use a public HTTPS tunnel
-   for local testing.
-
-This gem does not ship a Next.js / Stimulus Apple Pay button. The TKF
-storefront already owns the wallet and Card Fields UI; Apple Pay belongs
-there, next to `FUNDING.PAYPAL`.
+   and render Apple's `ApplePaySession`. The gem records
+   `payment_source.apple_pay` as
+   `Spree::PaypalPlatform::PaymentSources::ApplePay`.
+4. Safari + HTTPS only.
 
 ## Coming from `spree_paypal_checkout`
 
-Existing `spree_payment_methods.type` rows store
-`SpreePaypalCheckout::Gateway`. This gem aliases that constant, so checkout
-keeps working before you migrate. The install generator also copies a
-rewrite migration that updates those STI strings to
-`Spree::PaypalCheckout::Gateway`.
-
-Replace the GitHub pin:
+Existing `spree_payment_methods.type` rows may still store
+`SpreePaypalCheckout::Gateway` or `Spree::PaypalCheckout::Gateway`. The
+install generator copies a rewrite migration that updates those STI strings
+to `Spree::PaypalPlatform::Gateway` and renames
+`spree_paypal_checkout_orders` → `spree_paypal_platform_orders`.
 
 ```ruby
 # before
@@ -97,11 +86,9 @@ gem 'spree_paypal_checkout', github: 'aypex-io/spree_paypal_checkout', branch: '
 gem 'spree-paypal_platform'
 ```
 
-Then run the install generator and bump the storefront's
-`resolveGatewayId` map if it still keys on `paypal_checkout` /
-`SpreePaypalCheckout::Gateway` — both still resolve if you keep the old
-keys, because the gateway's `api_type` becomes `paypal_checkout` either way
-(`Spree::PaypalCheckout::Gateway` → `paypal_checkout`).
+Storefront `resolveGatewayId` should map `paypal_platform` /
+`Spree::PaypalPlatform::Gateway`. Keep the old `paypal_checkout` /
+`SpreePaypalCheckout::Gateway` keys until the STI rewrite has run.
 
 ## Developing
 

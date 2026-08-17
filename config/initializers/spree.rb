@@ -4,5 +4,5 @@
 # config.spree.payment_methods in its own after_initialize, and a
 # file-scope registration here would be silently clobbered.
 Rails.application.config.after_initialize do
-  Rails.application.config.spree.payment_methods << Spree::PaypalCheckout::Gateway
+  Rails.application.config.spree.payment_methods << Spree::PaypalPlatform::Gateway
 end

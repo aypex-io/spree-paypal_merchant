@@ -1,15 +1,15 @@
 # frozen_string_literal: true
 
 class RewriteSpreePaypalCheckoutStiTypes < ActiveRecord::Migration[7.2]
-  # Hosts coming from the official / forked `spree_paypal_checkout` gem store
+  # Hosts coming from the official / forked `spree_paypal_platform` gem store
   # `SpreePaypalCheckout::Gateway` (and `…::PaymentSources::Paypal`) in STI
   # type columns. The new gem aliases those constants, so checkout keeps
   # working before this migration runs; rewriting the strings makes the
   # alias optional for the next deploy.
   LEGACY_TO_CURRENT = {
-    'SpreePaypalCheckout::Gateway' => 'Spree::PaypalCheckout::Gateway',
-    'SpreePaypalCheckout::PaymentSources::Paypal' => 'Spree::PaypalCheckout::PaymentSources::Paypal',
-    'SpreePaypalCheckout::Order' => 'Spree::PaypalCheckout::Order'
+    'SpreePaypalCheckout::Gateway' => 'Spree::PaypalPlatform::Gateway',
+    'SpreePaypalCheckout::PaymentSources::Paypal' => 'Spree::PaypalPlatform::PaymentSources::Paypal',
+    'SpreePaypalCheckout::Order' => 'Spree::PaypalPlatform::Order'
   }.freeze
 
   def up
