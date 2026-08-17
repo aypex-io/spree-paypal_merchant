@@ -70,26 +70,6 @@ https://<store>/api/v3/webhooks/payments/<prefixed-payment-method-id>
    `Spree::PaypalPlatform::PaymentSources::ApplePay`.
 4. Safari + HTTPS only.
 
-## Coming from `spree_paypal_checkout`
-
-Existing `spree_payment_methods.type` rows may still store
-`SpreePaypalCheckout::Gateway` or `Spree::PaypalCheckout::Gateway`. The
-install generator copies a rewrite migration that updates those STI strings
-to `Spree::PaypalPlatform::Gateway` and renames
-`spree_paypal_checkout_orders` → `spree_paypal_platform_orders`.
-
-```ruby
-# before
-gem 'spree_paypal_checkout', github: 'aypex-io/spree_paypal_checkout', branch: 'tongkat-fitness'
-
-# after
-gem 'spree-paypal_platform'
-```
-
-Storefront `resolveGatewayId` should map `paypal_platform` /
-`Spree::PaypalPlatform::Gateway`. Keep the old `paypal_checkout` /
-`SpreePaypalCheckout::Gateway` keys until the STI rewrite has run.
-
 ## Developing
 
 ```bash

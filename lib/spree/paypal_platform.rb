@@ -23,20 +23,10 @@ module Spree
     ##
     # STI type names that count as this gem's gateway.
     #
-    # Includes historical strings from the official `spree_paypal_checkout`
-    # gem and the short-lived `Spree::PaypalCheckout` name so existing
-    # payment-method rows keep matching before the rewrite migration runs.
-    #
     # @return [Array<String>]
     #
     def self.gateway_type_names
-      (
-        [
-          Gateway.name,
-          'Spree::PaypalCheckout::Gateway',
-          'SpreePaypalCheckout::Gateway'
-        ] + Gateway.descendants.map(&:name)
-      ).uniq
+      ([Gateway.name] + Gateway.descendants.map(&:name)).uniq
     end
   end
 end

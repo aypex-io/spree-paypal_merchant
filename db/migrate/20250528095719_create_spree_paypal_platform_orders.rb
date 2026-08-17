@@ -1,8 +1,8 @@
 # frozen_string_literal: true
 
-class CreateSpreePaypalCheckoutOrders < ActiveRecord::Migration[7.2]
+class CreateSpreePaypalPlatformOrders < ActiveRecord::Migration[7.2]
   def change
-    create_table :spree_paypal_checkout_orders do |t|
+    create_table :spree_paypal_platform_orders do |t|
       t.references :order, null: false
       t.references :payment_method, null: false
       t.string :paypal_id, null: false
@@ -17,6 +17,7 @@ class CreateSpreePaypalCheckoutOrders < ActiveRecord::Migration[7.2]
       t.timestamps
     end
 
-    add_index :spree_paypal_checkout_orders, %i[order_id paypal_id], unique: true
+    add_index :spree_paypal_platform_orders, %i[order_id paypal_id], unique: true
+    add_index :spree_paypal_platform_orders, :paypal_id, unique: true
   end
 end

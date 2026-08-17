@@ -2,16 +2,15 @@
 
 require 'spec_helper'
 
-RSpec.describe 'historical PayPal Checkout STI type names' do
-  it 'includes the official gem type string' do
-    expect(Spree::PaypalPlatform.gateway_type_names).to include('SpreePaypalCheckout::Gateway')
-  end
-
-  it 'includes the short-lived Spree::PaypalCheckout type string' do
-    expect(Spree::PaypalPlatform.gateway_type_names).to include('Spree::PaypalCheckout::Gateway')
-  end
-
+RSpec.describe 'gateway type names' do
   it 'includes the current type string' do
     expect(Spree::PaypalPlatform.gateway_type_names).to include('Spree::PaypalPlatform::Gateway')
+  end
+
+  it 'does not include other PayPal gems' do
+    expect(Spree::PaypalPlatform.gateway_type_names).not_to include(
+      'SpreePaypalCheckout::Gateway',
+      'Spree::PaypalCheckout::Gateway'
+    )
   end
 end

@@ -2,6 +2,11 @@
 
 All notable changes to this project are documented in this file.
 
+## 5.1.1
+
+One migration: create `spree_paypal_platform_orders`. Removed the leftover
+checkout-table / STI rewrite / rename migrations from 5.1.0.
+
 ## 5.1.0
 
 Full internal rename to `Spree::PaypalPlatform`.
