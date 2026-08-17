@@ -1,0 +1,38 @@
+---
+# Publishes to RubyGems.org via Trusted Publishing (OIDC) when a v* tag is
+# pushed. Requires a trusted publisher registered on RubyGems.org for this
+# gem with:
+#   owner       aypex-io
+#   repository  spree-paypal_checkout
+#   workflow    release.yml
+#   environment release
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  push:
+    name: Push gem to RubyGems.org
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: write
+      id-token: write
+
+    environment: release
+
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Set up Ruby
+        uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: ruby
+          bundler-cache: true
+
+      - uses: rubygems/release-gem@v1

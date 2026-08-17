@@ -1,0 +1,16 @@
+<div class="alert alert-info">
+  <p class="mb-0">
+    To find your <strong>Client ID</strong> and <strong>Client Secret</strong>, go to the
+    <%= external_link_to 'PayPal Developer Dashboard', 'https://developer.paypal.com/dashboard/', class: 'alert-link' %>.
+    For more information, see the <%= external_link_to 'PayPal REST API documentation', 'https://developer.paypal.com/api/rest/', class: 'alert-link' %>.
+  </p>
+</div>
+
+<div class="alert alert-info mt-3">
+  <p class="mb-0">
+    <strong>Apple Pay</strong> is a funding source of this same PayPal method, not a second payment method.
+    Register every storefront domain that will show the Apple Pay button in the
+    <%= external_link_to 'PayPal Apple Pay domain registration', 'https://developer.paypal.com/docs/checkout/apm/apple-pay/', class: 'alert-link' %>
+    dashboard, then set <em>Apple pay domain</em> below. The button only renders in Safari over HTTPS.
+  </p>
+</div>

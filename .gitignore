@@ -1,0 +1,13 @@
+spec/dummy/
+pkg/
+tmp/
+log/
+coverage/
+.bundle/
+Gemfile.lock
+*.gem
+.yardoc/
+doc/
+.ruby-lsp/
+.rspec_status
+.DS_Store

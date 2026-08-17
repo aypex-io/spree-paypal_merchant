@@ -1,0 +1,17 @@
+<p class="mb-0">
+  <%= source.try(:display_payment_info) || source.class.try(:display_name) %>
+</p>
+<% if source.respond_to?(:email) && source.email.present? %>
+  <p class="mb-0">
+    <%= source.email %>
+  </p>
+<% end %>
+<% if source.respond_to?(:account_status) && source.account_status.present? %>
+  <p class="mb-0">
+    <% if source.account_status == 'VERIFIED' %>
+      <code class="text-success"><%= source.account_status %></code>
+    <% else %>
+      <code class="text-danger"><%= source.account_status %></code>
+    <% end %>
+  </p>
+<% end %>

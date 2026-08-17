@@ -1,0 +1,65 @@
+plugins:
+  - rubocop-rails
+
+AllCops:
+  DisplayCopNames: true
+  TargetRubyVersion: 3.3
+  NewCops: enable
+  SuggestExtensions: false
+  Exclude:
+    - 'spec/dummy/**/*'
+    - 'vendor/**/*'
+    - 'bin/**/*'
+    - 'lib/generators/**/*'
+
+Layout/LineLength:
+  Max: 160
+
+Metrics/AbcSize:
+  Enabled: false
+
+Metrics/BlockLength:
+  Enabled: false
+
+Metrics/ClassLength:
+  Enabled: false
+
+Metrics/CyclomaticComplexity:
+  Enabled: false
+
+Metrics/MethodLength:
+  Enabled: false
+
+Metrics/ModuleLength:
+  Enabled: false
+
+Metrics/PerceivedComplexity:
+  Enabled: false
+
+Naming/FileName:
+  Exclude:
+    - 'lib/spree-paypal_checkout.rb'
+
+Naming/VariableNumber:
+  Enabled: false
+
+Gemspec/DevelopmentDependencies:
+  Enabled: false
+
+Rails/RakeEnvironment:
+  Enabled: false
+
+Rails/InverseOf:
+  Enabled: false
+
+Style/Documentation:
+  Enabled: false
+
+Style/FrozenStringLiteralComment:
+  Enabled: true
+
+Style/StringLiterals:
+  EnforcedStyle: single_quotes
+
+Style/HashSyntax:
+  EnforcedShorthandSyntax: either

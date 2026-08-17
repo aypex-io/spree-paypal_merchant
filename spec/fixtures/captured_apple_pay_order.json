@@ -1,0 +1,40 @@
+{
+  "create_time": "2025-06-02T20:16:38Z",
+  "update_time": "2025-06-02T20:16:47Z",
+  "id": "42W74769459122838",
+  "payment_source": {
+    "apple_pay": {
+      "id": "APPLEPAY-TXN-1",
+      "name": "Jane Apple",
+      "email_address": "jane@example.com",
+      "card": {
+        "brand": "VISA",
+        "last_digits": "4242",
+        "type": "CREDIT"
+      }
+    }
+  },
+  "intent": "CAPTURE",
+  "purchase_units": [
+    {
+      "reference_id": "default",
+      "amount": {
+        "currency_code": "GBP",
+        "value": "86.99"
+      },
+      "payments": {
+        "captures": [
+          {
+            "status": "COMPLETED",
+            "id": "6F473251BB811841E",
+            "amount": {
+              "currency_code": "GBP",
+              "value": "86.99"
+            }
+          }
+        ]
+      }
+    }
+  ],
+  "status": "COMPLETED"
+}
