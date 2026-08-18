@@ -23,7 +23,6 @@ module Spree
       preference :webhook_secret, :string
       preference :test_mode, :boolean, default: true
       preference :enable_apple_pay, :boolean, default: true
-      preference :apple_pay_domain, :string
 
       validates :preferred_client_id, :preferred_client_secret, presence: true
 

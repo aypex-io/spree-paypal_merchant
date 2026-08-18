@@ -1,5 +1,10 @@
 # Changelog
 
+## 5.1.3
+
+Remove the unused `apple_pay_domain` preference. Domain registration is
+in the PayPal dashboard, not this field.
+
 ## 5.1.2
 
 - Completing a session GETs the PayPal order first and skips capture when

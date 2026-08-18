@@ -54,6 +54,10 @@ RSpec.describe Spree::PaypalPlatform::Gateway do
     end
   end
 
+  it 'does not define an unused apple_pay_domain preference' do
+    expect(gateway.has_preference?(:apple_pay_domain)).to be false
+  end
+
   describe '#client' do
     it 'returns a PayPal SDK client' do
       expect(gateway.client).to be_a(PaypalServerSdk::Client)
