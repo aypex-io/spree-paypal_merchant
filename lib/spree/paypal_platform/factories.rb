@@ -9,7 +9,8 @@ FactoryBot.define do
         client_id: ENV.fetch('PAYPAL_CLIENT_ID', 'client_id_test'),
         client_secret: ENV.fetch('PAYPAL_CLIENT_SECRET', 'client_secret_test'),
         test_mode: true,
-        enable_apple_pay: true
+        enable_apple_pay: true,
+        enable_card_fields: true
       }
     end
   end

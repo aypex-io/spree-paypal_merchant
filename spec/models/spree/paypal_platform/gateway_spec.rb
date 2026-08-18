@@ -58,6 +58,17 @@ RSpec.describe Spree::PaypalPlatform::Gateway do
     expect(gateway.has_preference?(:apple_pay_domain)).to be false
   end
 
+  describe 'public funding preferences' do
+    it 'exposes apple pay and card fields flags' do
+      expect(gateway.public_preferences).to include(enable_apple_pay: true, enable_card_fields: true)
+    end
+
+    it 'reflects disabled card fields' do
+      gateway.preferred_enable_card_fields = false
+      expect(gateway.card_fields_enabled?).to be false
+    end
+  end
+
   describe '#client' do
     it 'returns a PayPal SDK client' do
       expect(gateway.client).to be_a(PaypalServerSdk::Client)

@@ -36,6 +36,23 @@ RSpec.describe Spree::PaypalPlatform::Gateway::PaymentSessions do
       expect(session.external_data['client_token']).to eq('test-client-token')
     end
 
+    it 'advertises funding flags to the storefront' do
+      session = gateway.create_payment_session(order: order)
+      expect(session.external_data['enable_apple_pay']).to be true
+      expect(session.external_data['enable_card_fields']).to be true
+    end
+
+    context 'when card fields are disabled' do
+      before { gateway.preferred_enable_card_fields = false }
+
+      it 'does not request a client token' do
+        expect(gateway).not_to receive(:generate_client_token)
+        session = gateway.create_payment_session(order: order)
+        expect(session.external_data).not_to have_key('client_token')
+        expect(session.external_data['enable_card_fields']).to be false
+      end
+    end
+
     context 'when the client token cannot be generated' do
       before { allow(gateway).to receive(:generate_client_token).and_return(nil) }
 

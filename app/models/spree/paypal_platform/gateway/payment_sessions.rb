@@ -47,8 +47,13 @@ module Spree
 
             session_data = paypal_response.data.as_json
 
-            client_token = generate_client_token
-            session_data['client_token'] = client_token if client_token.present?
+            session_data['enable_apple_pay'] = apple_pay_enabled?
+            session_data['enable_card_fields'] = card_fields_enabled?
+
+            if card_fields_enabled?
+              client_token = generate_client_token
+              session_data['client_token'] = client_token if client_token.present?
+            end
 
             payment_session_class.create!(
               order: order,

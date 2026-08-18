@@ -1,5 +1,12 @@
 # Changelog
 
+## 5.1.4
+
+- `enable_card_fields` preference (checkbox, default on).
+- Storefront sees `enable_apple_pay` and `enable_card_fields` on the payment
+  method (`public_preferences`) and on the payment session `external_data`.
+- Client token is not requested when Card Fields are disabled.
+
 ## 5.1.3
 
 Remove the unused `apple_pay_domain` preference. Domain registration is

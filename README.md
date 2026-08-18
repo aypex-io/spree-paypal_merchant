@@ -48,7 +48,8 @@ Then add a **PayPal** payment method in admin and set:
 | `client_id` / `client_secret` | REST app credentials from the PayPal Developer Dashboard |
 | `webhook_secret` | PayPal webhook ID (used as the verify-webhook `webhook_id`) |
 | `test_mode` | Sandbox vs live |
-| `enable_apple_pay` | Advertise Apple Pay to headless storefronts (default on) |
+| `enable_apple_pay` | Offer Apple Pay on the storefront (default on) |
+| `enable_card_fields` | Offer Card Fields on the storefront (default on) |
 
 Webhook URL is the standard Spree v3 payments webhook:
 

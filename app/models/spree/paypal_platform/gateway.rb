@@ -23,6 +23,7 @@ module Spree
       preference :webhook_secret, :string
       preference :test_mode, :boolean, default: true
       preference :enable_apple_pay, :boolean, default: true
+      preference :enable_card_fields, :boolean, default: true
 
       validates :preferred_client_id, :preferred_client_secret, presence: true
 
@@ -103,6 +104,15 @@ module Spree
       #
       def apple_pay_enabled?
         preferred_enable_apple_pay
+      end
+
+      ##
+      # Whether the storefront should offer Card Fields for this method.
+      #
+      # @return [TrueClass, FalseClass]
+      #
+      def card_fields_enabled?
+        preferred_enable_card_fields
       end
 
       ##
@@ -277,6 +287,12 @@ module Spree
             success(authorization, response.data.as_json)
           end
         end
+      end
+
+      protected
+
+      def public_preference_keys
+        %i[enable_apple_pay enable_card_fields]
       end
 
       private
