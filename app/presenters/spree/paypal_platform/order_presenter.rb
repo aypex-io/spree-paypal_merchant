@@ -18,9 +18,13 @@ module Spree
 
       ##
       # @param order [Spree::Order]
+      # @param amount [Numeric, NilClass] what PayPal should charge; defaults to
+      #   the order total. Less than the total when a gift card or store credit
+      #   pays part of the order.
       #
-      def initialize(order)
+      def initialize(order, amount: nil)
         @order = order
+        @amount = amount
       end
 
       attr_reader :order
@@ -41,13 +45,27 @@ module Spree
       private
 
       def purchase_unit
-        args = {
-          amount: amount_with_breakdown,
-          items: items
-        }
+        # A gift card or store credit pays part of the order, so the breakdown
+        # and items (which always sum to the full order total) can't describe
+        # what PayPal charges. PayPal accepts an amount on its own.
+        args =
+          if partial_charge?
+            { amount: PaypalServerSdk::AmountWithBreakdown.new(currency_code: order.currency.upcase,
+                                                               value: charge_amount.to_s) }
+          else
+            { amount: amount_with_breakdown, items: items }
+          end
         args[:shipping] = shipping_details if shipping_details
 
         PaypalServerSdk::PurchaseUnitRequest.new(**args)
+      end
+
+      def charge_amount
+        @amount.presence || order.total
+      end
+
+      def partial_charge?
+        charge_amount.to_d != order.total.to_d
       end
 
       # NOTE: the breakdown only sends additional (non-included) tax — sending

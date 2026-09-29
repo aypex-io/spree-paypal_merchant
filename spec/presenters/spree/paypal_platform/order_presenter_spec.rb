@@ -96,6 +96,43 @@ RSpec.describe Spree::PaypalPlatform::OrderPresenter do
     end
   end
 
+  context 'charge amount (gift card / store credit covers part of the order)' do
+    let(:line_item) do
+      item = build_stubbed(:line_item)
+      allow(item).to receive(:name).and_return('Item')
+      item
+    end
+
+    before do
+      allow(order).to receive(:item_total).and_return(75.0)
+      allow(order).to receive(:additional_tax_total).and_return(0.0)
+      allow(order).to receive(:ship_total).and_return(3.0)
+      allow(order).to receive(:promo_total).and_return(0)
+      allow(order).to receive(:total).and_return(78.0)
+    end
+
+    def amount_for(presenter)
+      presenter.to_json['body'].purchase_units[0].amount
+    end
+
+    it 'charges the order total by default' do
+      expect(amount_for(subject).value).to eq('78.0')
+    end
+
+    context 'when the amount due is less than the order total' do
+      subject { described_class.new(order, amount: 58.0) }
+
+      it 'charges only the amount due, not the full order total' do
+        expect(amount_for(subject).value).to eq('58.0')
+      end
+
+      it 'omits the breakdown and items, which would sum to the full total' do
+        expect(amount_for(subject).breakdown).to be_nil
+        expect(subject.to_json['body'].purchase_units[0].items).to be_nil
+      end
+    end
+  end
+
   context 'provided shipping address (storefront owns the address)' do
     let(:line_item) do
       item = build_stubbed(:line_item)
