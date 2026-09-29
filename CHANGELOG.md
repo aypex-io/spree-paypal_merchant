@@ -1,5 +1,18 @@
 # Changelog
 
+## 5.1.5
+
+- Gift cards and store credit: the PayPal order is created for the amount
+  due (`total_minus_store_credits`), not the full order total. Before, PayPal
+  charged the full total while Spree recorded the gift card as paying part
+  of it, so the customer paid twice for that part. A partial charge is sent
+  as a plain amount, without the breakdown and items that sum to the full
+  total.
+- Completing a session refuses to capture when the PayPal order amount no
+  longer matches the amount due (e.g. a gift card was applied, or the cart
+  changed, after the PayPal order was created). The session fails and the
+  storefront creates a new one.
+
 ## 5.1.4
 
 - `enable_card_fields` preference (checkbox, default on).

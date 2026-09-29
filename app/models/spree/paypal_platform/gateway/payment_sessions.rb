@@ -42,7 +42,7 @@ module Spree
           return nil if total.zero?
 
           protect_from_error do
-            order_presenter = OrderPresenter.new(order)
+            order_presenter = OrderPresenter.new(order, amount: total)
             paypal_response = client.orders.create_order(order_presenter.to_json)
 
             session_data = paypal_response.data.as_json
@@ -101,6 +101,7 @@ module Spree
             if fetched.data.status == 'COMPLETED'
               fetched
             else
+              ensure_amount_matches!(payment_session, fetched)
               client.orders.capture_order(lookup)
             end
 
@@ -165,6 +166,26 @@ module Spree
         end
 
         private
+
+        ##
+        # Refuses to capture a PayPal order whose amount no longer matches what
+        # is due — e.g. a gift card was applied, or the cart changed, after the
+        # PayPal order was created. Capturing would take the stale amount; the
+        # storefront recreates the session instead.
+        #
+        # @raise [Spree::Core::GatewayError]
+        #
+        def ensure_amount_matches!(payment_session, fetched)
+          value = fetched.data.as_json.dig('purchase_units', 0, 'amount', 'value')
+          return if value.blank?
+
+          due = payment_session.order.total_minus_store_credits
+          return if value.to_d == due.to_d
+
+          payment_session.fail if payment_session.can_fail?
+          raise Spree::Core::GatewayError,
+                "PayPal order amount #{value} does not match the amount due #{due}"
+        end
 
         def extract_order_id_from_webhook(event_type, resource)
           case event_type

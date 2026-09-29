@@ -62,6 +62,19 @@ RSpec.describe Spree::PaypalPlatform::Gateway::PaymentSessions do
       end
     end
 
+    context 'when a gift card or store credit covers part of the order' do
+      before { allow(order).to receive(:total_minus_store_credits).and_return(order.total - 10) }
+
+      it 'asks PayPal for only the amount due, matching the session amount' do
+        session = gateway.create_payment_session(order: order)
+
+        expect(gateway.client.orders).to have_received(:create_order) do |request|
+          expect(request['body'].purchase_units[0].amount.value.to_d).to eq(order.total - 10)
+        end
+        expect(session.amount).to eq(order.total - 10)
+      end
+    end
+
     context 'when amount is zero' do
       it 'returns nil' do
         expect(gateway.create_payment_session(order: order, amount: 0)).to be_nil
@@ -109,6 +122,41 @@ RSpec.describe Spree::PaypalPlatform::Gateway::PaymentSessions do
         expect(orders_api).not_to receive(:capture_order)
         gateway.complete_payment_session(payment_session: payment_session)
         expect(payment_session.reload.status).to eq('completed')
+      end
+    end
+
+    context 'when the PayPal order amount no longer matches the amount due' do
+      # e.g. a gift card applied, or the cart changed, after the PayPal order
+      # was created. Capturing would take the stale amount.
+      let(:fetched_data) do
+        double(status: 'APPROVED', as_json: {
+                 'status' => 'APPROVED',
+                 'purchase_units' => [{ 'amount' => { 'currency_code' => 'USD', 'value' => (order.total + 20).to_s } }]
+               })
+      end
+
+      it 'does not capture, fails the session and raises' do
+        expect(orders_api).not_to receive(:capture_order)
+
+        expect do
+          gateway.complete_payment_session(payment_session: payment_session)
+        end.to raise_error(Spree::Core::GatewayError, /does not match the amount due/)
+
+        expect(payment_session.reload.status).to eq('failed')
+      end
+    end
+
+    context 'when the PayPal order amount matches the amount due' do
+      let(:fetched_data) do
+        double(status: 'APPROVED', as_json: {
+                 'status' => 'APPROVED',
+                 'purchase_units' => [{ 'amount' => { 'currency_code' => 'USD', 'value' => format('%.2f', order.total) } }]
+               })
+      end
+
+      it 'captures' do
+        gateway.complete_payment_session(payment_session: payment_session)
+        expect(orders_api).to have_received(:capture_order)
       end
     end
 
