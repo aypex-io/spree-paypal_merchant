@@ -1,5 +1,27 @@
 # Changelog
 
+## 5.2.0
+
+Renamed from `spree-paypal_platform`. Same code, new name.
+
+| | Before | After |
+|---|---|---|
+| Gem | `spree-paypal_platform` | `spree-paypal_merchant` |
+| Require | `spree/paypal_platform` | `spree/paypal_merchant` |
+| Constant | `Spree::PaypalPlatform` | `Spree::PaypalMerchant` |
+| Table | `spree_paypal_platform_orders` | `spree_paypal_merchant_orders` |
+| Store API type | `paypal_platform` | `paypal_merchant` |
+| Generator | `spree:paypal_platform:install` | `spree:paypal_merchant:install` |
+
+To upgrade, swap the gem in the Gemfile and run
+`bin/rails g spree:paypal_merchant:install`. It copies
+`RenameSpreePaypalPlatformToPaypalMerchant`, which renames the table and
+rewrites stored STI class names (payment methods, payment sources, payment
+sessions). Map the `paypal_merchant` Store API type in the storefront
+*before* deploying the backend.
+
+Entries below use the old name.
+
 ## 5.1.5
 
 - Gift cards and store credit: the PayPal order is created for the amount

@@ -1,11 +1,11 @@
-# spree-paypal_platform
+# spree-paypal_merchant
 
 PayPal Checkout for Spree 5.6+, as a single payment method covering the PayPal
 wallet, Apple Pay, and Card Fields.
 
-Published gem: **`spree-paypal_platform`**  
-Require: **`spree/paypal_platform`**  
-Constant: **`Spree::PaypalPlatform`**
+Published gem: **`spree-paypal_merchant`**  
+Require: **`spree/paypal_merchant`**  
+Constant: **`Spree::PaypalMerchant`**
 
 This is not the official `spree_paypal_checkout` gem. It started from that
 extension (VAT `AMOUNT_MISMATCH` guard, storefront-owned address) and adds
@@ -13,7 +13,7 @@ Apple Pay as a funding source of the same gateway.
 
 ## What it is
 
-- One `Spree::PaypalPlatform::Gateway` payment method.
+- One `Spree::PaypalMerchant::Gateway` payment method.
 - Checkout goes through Spree's **Store API v3 payment sessions**
   (`POST /api/v3/store/carts/:id/payment_sessions` → complete).
 - The storefront owns the address. The gem pins it with
@@ -30,12 +30,12 @@ a `payment_source.apple_pay` on the same Checkout order.
 ## Installation
 
 ```ruby
-gem 'spree-paypal_platform'
+gem 'spree-paypal_merchant'
 ```
 
 ```bash
 bundle install
-bin/rails g spree:paypal_platform:install
+bin/rails g spree:paypal_merchant:install
 ```
 
 The generator copies the migrations. Pass `--auto-run-migrations` to skip the
@@ -67,7 +67,7 @@ https://<store>/api/v3/webhooks/payments/<prefixed-payment-method-id>
 3. Headless storefronts load the PayPal JS SDK with `components=applepay`
    and render Apple's `ApplePaySession`. The gem records
    `payment_source.apple_pay` as
-   `Spree::PaypalPlatform::PaymentSources::ApplePay`.
+   `Spree::PaypalMerchant::PaymentSources::ApplePay`.
 4. Safari + HTTPS only.
 
 ## Developing
