@@ -4,7 +4,7 @@ require 'spec_helper'
 
 RSpec.describe Spree::Api::V3::PaymentMethodSerializer do
   let(:store) { create(:store) }
-  let(:gateway) { create(:paypal_platform_gateway, store: store) }
+  let(:gateway) { create(:paypal_merchant_gateway, store: store) }
 
   it 'includes public funding preferences' do
     payload = described_class.new(gateway).to_h
