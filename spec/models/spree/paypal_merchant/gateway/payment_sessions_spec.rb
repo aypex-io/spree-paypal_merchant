@@ -713,7 +713,14 @@ RSpec.describe Spree::PaypalMerchant::Gateway::PaymentSessions do
 
   describe '#parse_webhook_event' do
     let(:payment_session) { create(:paypal_merchant_payment_session, cart: cart, payment_method: gateway, external_id: 'ORDER-123') }
-    let(:raw_body) { { event_type: 'CHECKOUT.ORDER.APPROVED', resource: { 'id' => 'ORDER-123' } }.to_json }
+    let(:event_type) { 'PAYMENT.CAPTURE.COMPLETED' }
+    let(:paypal_order_id) { 'ORDER-123' }
+    let(:capture_id) { 'CAPTURE-456' }
+    # A capture event names the capture in `id` and the PayPal order in `related_ids`.
+    let(:raw_body) do
+      { event_type: event_type,
+        resource: { 'id' => capture_id, 'supplementary_data' => { 'related_ids' => { 'order_id' => paypal_order_id } } } }.to_json
+    end
     let(:signed_headers) do
       {
         'PAYPAL-TRANSMISSION-ID' => 'tx-1',
@@ -725,15 +732,6 @@ RSpec.describe Spree::PaypalMerchant::Gateway::PaymentSessions do
     end
 
     before { payment_session }
-
-    context 'when webhook_secret is blank in a local env' do
-      before { gateway.update!(preferences: gateway.preferences.merge(webhook_secret: nil)) }
-
-      it 'returns authorized action with the payment session' do
-        result = gateway.parse_webhook_event(raw_body, {})
-        expect(result[:action]).to eq(:authorized)
-      end
-    end
 
     context 'when webhook_secret is blank outside a local env' do
       before do
@@ -768,38 +766,140 @@ RSpec.describe Spree::PaypalMerchant::Gateway::PaymentSessions do
         end.to raise_error(Spree::PaymentMethod::WebhookSignatureError, /Invalid webhook signature/)
       end
 
-      it 'returns authorized when PayPal verifies the signature' do
+      it 'returns captured when PayPal verifies the signature' do
         stub_paypal_http(
           { 'access_token' => 'tok' },
           { 'verification_status' => 'SUCCESS' }
         )
 
         result = gateway.parse_webhook_event(raw_body, signed_headers)
-        expect(result[:action]).to eq(:authorized)
-      end
-    end
-
-    context 'when the event is PAYMENT.CAPTURE.COMPLETED' do
-      let(:raw_body) do
-        { event_type: 'PAYMENT.CAPTURE.COMPLETED',
-          resource: { 'id' => 'CAPTURE-456', 'supplementary_data' => { 'related_ids' => { 'order_id' => 'ORDER-123' } } } }.to_json
-      end
-
-      before { gateway.update!(preferences: gateway.preferences.merge(webhook_secret: nil)) }
-
-      it 'returns captured action with the payment session' do
-        result = gateway.parse_webhook_event(raw_body, {})
         expect(result[:action]).to eq(:captured)
       end
     end
 
-    context 'when the payment session is not found' do
-      let(:raw_body) { { event_type: 'CHECKOUT.ORDER.APPROVED', resource: { 'id' => 'UNKNOWN' } }.to_json }
-
+    context 'when webhook_secret is blank in a local env' do
       before { gateway.update!(preferences: gateway.preferences.merge(webhook_secret: nil)) }
 
-      it 'returns nil' do
-        expect(gateway.parse_webhook_event(raw_body, {})).to be_nil
+      it 'passes the PayPal event on as metadata' do
+        result = gateway.parse_webhook_event(raw_body, {})
+        expect(result[:metadata]).to include(paypal_event: a_hash_including('event_type' => 'PAYMENT.CAPTURE.COMPLETED'))
+      end
+
+      # The approved order has not been captured, so there is nothing to settle:
+      # settling it would complete the session with no payment.
+      context 'when the event is CHECKOUT.ORDER.APPROVED' do
+        let(:raw_body) { { event_type: 'CHECKOUT.ORDER.APPROVED', resource: { 'id' => 'ORDER-123' } }.to_json }
+
+        it 'returns nil' do
+          expect(gateway.parse_webhook_event(raw_body, {})).to be_nil
+        end
+      end
+
+      {
+        'PAYMENT.CAPTURE.COMPLETED' => :captured,
+        # A pending capture settles as a payment that is not completed yet.
+        'PAYMENT.CAPTURE.PENDING' => :authorized,
+        'PAYMENT.CAPTURE.DENIED' => :failed,
+        'PAYMENT.CAPTURE.DECLINED' => :failed,
+        'PAYMENT.CAPTURE.REVERSED' => :canceled,
+        'PAYMENT.CAPTURE.REFUNDED' => :canceled
+      }.each do |type, action|
+        context "when the event is #{type}" do
+          let(:event_type) { type }
+
+          it "returns the #{action} action with the payment session" do
+            expect(gateway.parse_webhook_event(raw_body, {})).to include(action: action, payment_session: payment_session)
+          end
+        end
+      end
+
+      context 'when the event is one the gem does not act on' do
+        let(:event_type) { 'PAYMENT.CAPTURE.SOMETHING_NEW' }
+
+        it 'returns nil' do
+          expect(gateway.parse_webhook_event(raw_body, {})).to be_nil
+        end
+      end
+
+      context 'when the PayPal order is unknown' do
+        let(:paypal_order_id) { 'UNKNOWN' }
+
+        it 'returns nil' do
+          expect(gateway.parse_webhook_event(raw_body, {})).to be_nil
+        end
+      end
+
+      context 'when the session belongs to another payment method' do
+        let(:other_gateway) { create(:paypal_merchant_gateway, store: store) }
+        let(:payment_session) { create(:paypal_merchant_payment_session, cart: cart, payment_method: other_gateway, external_id: 'ORDER-123') }
+
+        it 'returns nil' do
+          expect(gateway.parse_webhook_event(raw_body, {})).to be_nil
+        end
+      end
+
+      context 'when the event has no PayPal order id' do
+        let(:raw_body) { { event_type: 'PAYMENT.CAPTURE.COMPLETED', resource: { 'id' => 'CAPTURE-456' } }.to_json }
+
+        it 'returns nil' do
+          expect(gateway.parse_webhook_event(raw_body, {})).to be_nil
+        end
+      end
+
+      # Payments taken on 5.x are keyed on the capture id, which Spree 6 cannot
+      # link back to the session: a late or redelivered event would settle twice.
+      context 'when the session was completed with a payment keyed on the capture id' do
+        let(:payment_session) do
+          create(:paypal_merchant_payment_session, cart: cart, payment_method: gateway, external_id: 'ORDER-123', status: 'completed')
+        end
+
+        before do
+          cart.payments.create!(payment_method: gateway, response_code: payment_response_code, amount: payment_session.amount,
+                                skip_source_requirement: true)
+        end
+
+        context 'when the payment holds the event capture id' do
+          let(:payment_response_code) { 'CAPTURE-456' }
+
+          it 'returns nil' do
+            expect(gateway.parse_webhook_event(raw_body, {})).to be_nil
+          end
+
+          it 'returns nil for every capture event' do
+            bodies = %w[PAYMENT.CAPTURE.PENDING PAYMENT.CAPTURE.DENIED PAYMENT.CAPTURE.REFUNDED].map do |type|
+              { event_type: type, resource: { 'id' => 'CAPTURE-456', 'supplementary_data' => { 'related_ids' => { 'order_id' => 'ORDER-123' } } } }.to_json
+            end
+
+            expect(bodies.map { |body| gateway.parse_webhook_event(body, {}) }).to all(be_nil)
+          end
+        end
+
+        context 'when the payment is keyed on the PayPal order id, as Spree 6 does' do
+          let(:payment_response_code) { 'ORDER-123' }
+
+          it 'still returns the action: core ignores a payment it already settled' do
+            expect(gateway.parse_webhook_event(raw_body, {})).to include(action: :captured)
+          end
+        end
+
+        context 'when the payment holds another capture id' do
+          let(:payment_response_code) { 'CAPTURE-OTHER' }
+
+          it 'still returns the action' do
+            expect(gateway.parse_webhook_event(raw_body, {})).to include(action: :captured)
+          end
+        end
+      end
+
+      context 'when the session is still pending and a payment holds the capture id' do
+        before do
+          cart.payments.create!(payment_method: gateway, response_code: 'CAPTURE-456', amount: payment_session.amount,
+                                skip_source_requirement: true)
+        end
+
+        it 'still returns the action' do
+          expect(gateway.parse_webhook_event(raw_body, {})).to include(action: :captured)
+        end
       end
     end
   end

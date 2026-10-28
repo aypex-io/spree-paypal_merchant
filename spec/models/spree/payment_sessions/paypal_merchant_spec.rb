@@ -331,6 +331,14 @@ RSpec.describe Spree::PaymentSessions::PaypalMerchant do
 
         expect(session.payment_method).to have_received(:fetch_paypal_order).once
       end
+
+      context 'when the order still shows the capture as pending' do
+        let(:gateway_order) { double(data: double(as_json: pending_data)) }
+
+        it 'returns the session: a pending capture settles as a pending payment' do
+          expect(session.prepare_for_settlement!).to eq(session)
+        end
+      end
     end
 
     context 'when the capture is already settled' do
@@ -342,6 +350,42 @@ RSpec.describe Spree::PaymentSessions::PaypalMerchant do
 
       it 'returns the session' do
         expect(session.prepare_for_settlement!).to eq(session)
+      end
+    end
+
+    # Core settles a webhook as paid whatever the order shows, so a capture that
+    # holds no funds must stop here.
+    %w[DECLINED FAILED].each do |status|
+      context "when the stored capture is already #{status}" do
+        let(:external_data) do
+          captured_data.tap { |data| data['purchase_units'][0]['payments']['captures'][0]['status'] = status }
+        end
+
+        it 'raises without fetching the PayPal order' do
+          expect { session.prepare_for_settlement! }.to raise_error(Spree::Core::GatewayError, /#{status}/)
+
+          expect(session.payment_method).not_to have_received(:fetch_paypal_order)
+        end
+      end
+
+      context "when the fetched capture is #{status}" do
+        let(:external_data) { created_data }
+        let(:gateway_order) do
+          double(data: double(as_json: captured_data.tap { |data| data['purchase_units'][0]['payments']['captures'][0]['status'] = status }))
+        end
+
+        it 'raises' do
+          expect { session.prepare_for_settlement! }.to raise_error(Spree::Core::GatewayError, /#{status}/)
+        end
+      end
+    end
+
+    context 'when the fetched order has no capture' do
+      let(:external_data) { created_data }
+      let(:gateway_order) { double(data: double(as_json: created_data)) }
+
+      it 'raises' do
+        expect { session.prepare_for_settlement! }.to raise_error(Spree::Core::GatewayError, /no capture/)
       end
     end
   end

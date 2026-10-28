@@ -20,6 +20,24 @@ module Spree
         AMBIGUOUS_CLIENT_ERROR_STATUSES = [401, 408, 429].freeze
 
         ##
+        # The webhook events the gem settles, and the action Spree 6 takes for
+        # each. Anything else, such as CHECKOUT.ORDER.APPROVED, is ignored: an
+        # approved order holds no capture, so settling it would complete the
+        # session with no payment.
+        #
+        # A pending capture settles as a payment that is not completed yet; the
+        # COMPLETED event then completes that same payment.
+        #
+        WEBHOOK_ACTIONS = {
+          'PAYMENT.CAPTURE.COMPLETED' => :captured,
+          'PAYMENT.CAPTURE.PENDING' => :authorized,
+          'PAYMENT.CAPTURE.DENIED' => :failed,
+          'PAYMENT.CAPTURE.DECLINED' => :failed,
+          'PAYMENT.CAPTURE.REVERSED' => :canceled,
+          'PAYMENT.CAPTURE.REFUNDED' => :canceled
+        }.freeze
+
+        ##
         # @return [TrueClass, FalseClass]
         #
         def session_required?
@@ -194,36 +212,32 @@ module Spree
         ##
         # Parses an incoming PayPal webhook into a payment-session action.
         #
+        # Returns nil, so nothing is enqueued, for an event the gem does not
+        # settle ({WEBHOOK_ACTIONS}), for a PayPal order that has no session
+        # with this method, and for a session settled before Spree 6 (see
+        # {#settled_before_spree_6?}).
+        #
         # @param raw_body [String]
         # @param headers [Hash]
         # @return [Hash, NilClass]
+        # @raise [Spree::PaymentMethod::WebhookSignatureError] when the signature is invalid
         #
         def parse_webhook_event(raw_body, headers)
           verify_webhook_signature!(raw_body, headers)
 
           event = JSON.parse(raw_body).with_indifferent_access
-          event_type = event[:event_type]
-          resource = event[:resource] || {}
+          action = WEBHOOK_ACTIONS[event[:event_type]]
+          return nil unless action
 
-          paypal_order_id = extract_order_id_from_webhook(event_type, resource)
+          resource = event[:resource] || {}
+          paypal_order_id = resource.dig('supplementary_data', 'related_ids', 'order_id')
           return nil unless paypal_order_id
 
-          payment_session = Spree::PaymentSessions::PaypalMerchant.find_by(
-            payment_method: self,
-            external_id: paypal_order_id
-          )
+          payment_session = Spree::PaymentSessions::PaypalMerchant.find_by(payment_method: self, external_id: paypal_order_id)
           return nil unless payment_session
+          return nil if settled_before_spree_6?(payment_session, resource['id'])
 
-          case event_type
-          when 'CHECKOUT.ORDER.APPROVED'
-            { action: :authorized, payment_session: payment_session, metadata: { paypal_event: event } }
-          when 'PAYMENT.CAPTURE.COMPLETED'
-            { action: :captured, payment_session: payment_session, metadata: { paypal_event: event } }
-          when 'PAYMENT.CAPTURE.DENIED', 'PAYMENT.CAPTURE.DECLINED'
-            { action: :failed, payment_session: payment_session, metadata: { paypal_event: event } }
-          when 'PAYMENT.CAPTURE.REVERSED', 'PAYMENT.CAPTURE.REFUNDED'
-            { action: :canceled, payment_session: payment_session, metadata: { paypal_event: event } }
-          end
+          { action: action, payment_session: payment_session, metadata: { paypal_event: event } }
         end
 
         private
@@ -347,13 +361,20 @@ module Spree
                 "PayPal order amount #{value} does not match the amount due #{due}"
         end
 
-        def extract_order_id_from_webhook(event_type, resource)
-          case event_type
-          when /\ACHECKOUT\.ORDER\./
-            resource['id']
-          when /\APAYMENT\.CAPTURE\./
-            resource.dig('supplementary_data', 'related_ids', 'order_id')
-          end
+        ##
+        # Whether the session was settled before Spree 6. Payments taken on
+        # 5.x are keyed on the PayPal capture id, not the order id, so Spree 6
+        # cannot link them to their session, and an event delivered late would
+        # settle the order a second time.
+        #
+        # @param payment_session [Spree::PaymentSessions::PaypalMerchant]
+        # @param capture_id [String, NilClass] the capture the event is about
+        # @return [TrueClass, FalseClass]
+        #
+        def settled_before_spree_6?(payment_session, capture_id)
+          return false unless payment_session.completed? && capture_id.present?
+
+          payment_session.owner.payments.exists?(payment_method: self, response_code: capture_id)
         end
 
         def verify_webhook_signature!(raw_body, headers)

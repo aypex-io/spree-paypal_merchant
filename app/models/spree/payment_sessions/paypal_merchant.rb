@@ -95,14 +95,24 @@ module Spree
     # Reads the PayPal order before settlement, so the settlement lock holds
     # across no PayPal I/O. Skipped once the capture has reached a final status.
     #
+    # Only core's webhook workflow calls this. It settles a captured event as
+    # paid whatever the order shows, so a capture that holds no funds must stop
+    # here: DECLINED, FAILED, or none at all. Nothing is created, and the
+    # session stays as it was.
+    #
     # @return [Spree::PaymentSessions::PaypalMerchant] self
+    # @raise [Spree::Core::GatewayError] unless the capture is COMPLETED or PENDING
     #
     def prepare_for_settlement!
-      return self if capture_settled?
+      unless capture_settled?
+        response = payment_method.fetch_paypal_order(external_id)
+        update!(external_data: response.data.as_json)
+      end
 
-      response = payment_method.fetch_paypal_order(external_id)
-      update!(external_data: response.data.as_json)
-      self
+      return self if PAID_CAPTURE_STATUSES.include?(paypal_capture_status)
+
+      raise Spree::Core::GatewayError,
+            "PayPal order #{external_id} has #{paypal_capture_status ? "a #{paypal_capture_status} capture" : 'no capture'}; nothing to settle"
     end
 
     ##
