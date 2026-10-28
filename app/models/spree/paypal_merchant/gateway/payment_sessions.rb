@@ -14,6 +14,12 @@ module Spree
         extend ActiveSupport::Concern
 
         ##
+        # Client-error statuses PayPal can send whether or not it acted on the
+        # request: rejected credentials, a request timeout, a rate limit.
+        #
+        AMBIGUOUS_CLIENT_ERROR_STATUSES = [401, 408, 429].freeze
+
+        ##
         # @return [TrueClass, FalseClass]
         #
         def session_required?
@@ -108,11 +114,17 @@ module Spree
         #
         # Does not complete the cart — that is handled by Carts::Complete.
         #
+        # Only a refusal from PayPal fails the session. When the outcome is
+        # unknown (no answer, a server error, a rate limit), PayPal may have
+        # captured anyway, so the session stays pending: a retry reads the
+        # order first and settles a capture that went through.
+        #
         # @param payment_session [Spree::PaymentSessions::PaypalMerchant]
         # @param params [Hash] not used
         # @return [Spree::PaymentSessions::PaypalMerchant]
         # @raise [Spree::Core::GatewayError] when the session can no longer be
-        #   used, the amount due has changed, or PayPal refuses
+        #   used, the amount due has changed, PayPal refuses, or the outcome
+        #   is unknown
         #
         def complete_payment_session(payment_session:, **_unused)
           ensure_session_completable!(payment_session)
@@ -120,7 +132,7 @@ module Spree
           response = fetch_paypal_order(payment_session.external_id)
           if payment_session_class.paypal_capture_in(response.data.as_json).blank?
             ensure_amount_matches!(payment_session, response)
-            response = client.orders.capture_order('id' => payment_session.external_id, 'prefer' => 'return=representation')
+            response = capture_paypal_order(payment_session.external_id)
           end
 
           payment_session.update!(external_data: response.data.as_json)
@@ -133,8 +145,10 @@ module Spree
 
           payment_session
         rescue PaypalServerSdk::APIException => e
-          payment_session.fail if payment_session.can_fail?
+          payment_session.fail if paypal_refusal?(e) && payment_session.can_fail?
           raise Spree::Core::GatewayError, "PayPal API error: #{e.message}"
+        rescue *CONNECTION_ERRORS => e
+          raise Spree::Core::GatewayError, "PayPal connection error: #{e.message}"
         end
 
         ##
@@ -258,6 +272,45 @@ module Spree
           return if payment_session.order.blank?
 
           raise Spree::Core::GatewayError, 'PayPal payment session belongs to an order that has already been placed'
+        end
+
+        ##
+        # Captures the PayPal order. When PayPal says it is already captured
+        # (a double-submitted confirm, or a retry after an unanswered capture),
+        # the order is read back instead, so that capture settles like any other.
+        #
+        # @param paypal_order_id [String]
+        # @return [PaypalServerSdk::ApiResponse]
+        #
+        def capture_paypal_order(paypal_order_id)
+          client.orders.capture_order('id' => paypal_order_id, 'prefer' => 'return=representation')
+        rescue PaypalServerSdk::ErrorException => e
+          raise unless paypal_issue?(e, 'ORDER_ALREADY_CAPTURED')
+
+          fetch_paypal_order(paypal_order_id)
+        end
+
+        ##
+        # Whether PayPal definitely refused the request. A server error, or a
+        # client error in {AMBIGUOUS_CLIENT_ERROR_STATUSES}, leaves the outcome
+        # unknown.
+        #
+        # @param error [PaypalServerSdk::APIException]
+        # @return [TrueClass, FalseClass]
+        #
+        def paypal_refusal?(error)
+          status = error.response_code.to_i
+          status.between?(400, 499) && AMBIGUOUS_CLIENT_ERROR_STATUSES.exclude?(status)
+        end
+
+        ##
+        # @param error [PaypalServerSdk::ErrorException]
+        # @param issue [String] a PayPal error issue code
+        # @return [TrueClass, FalseClass]
+        #
+        def paypal_issue?(error, issue)
+          details = error.details
+          details.is_a?(Array) && details.any? { |detail| detail.respond_to?(:issue) && detail.issue == issue }
         end
 
         ##

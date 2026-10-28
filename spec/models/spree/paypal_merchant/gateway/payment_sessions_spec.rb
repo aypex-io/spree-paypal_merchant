@@ -24,6 +24,18 @@ RSpec.describe Spree::PaypalMerchant::Gateway::PaymentSessions do
     PaypalServerSdk::APIException.new("PayPal returned #{status_code}", double(status_code: status_code))
   end
 
+  # An error as the SDK raises it for a PayPal error body naming an issue.
+  def paypal_issue_error(status_code, issue)
+    body = { name: 'UNPROCESSABLE_ENTITY', message: 'The requested action could not be performed.', details: [{ issue: issue }] }
+    PaypalServerSdk::ErrorException.new('Unprocessable', double(status_code: status_code, raw_body: body.to_json))
+  end
+
+  # Read from the database: the cart factory leaves `cart.payments` loaded,
+  # so the association would not see a payment created through another copy.
+  def payments_on_cart
+    Spree::Payment.where(cart: cart)
+  end
+
   let(:store) { create(:store) }
   let(:gateway) { create(:paypal_merchant_gateway, store: store) }
   let(:customer) { create(:user) }
@@ -257,10 +269,10 @@ RSpec.describe Spree::PaypalMerchant::Gateway::PaymentSessions do
     context 'when PayPal cannot be reached about an open session' do
       let!(:open_session) { create(:paypal_merchant_payment_session, cart: cart, payment_method: gateway) }
 
-      before { allow(orders_api).to receive(:get_order).and_raise(Net::ReadTimeout) }
+      before { allow(orders_api).to receive(:get_order).and_raise(Faraday::TimeoutError) }
 
       it 'raises a gateway error and leaves the session open' do
-        expect { gateway.create_payment_session(order: cart) }.to raise_error(Spree::Core::GatewayError)
+        expect { gateway.create_payment_session(order: cart) }.to raise_error(Spree::Core::GatewayError, /connection error/)
 
         expect(open_session.reload).to be_pending
       end
@@ -326,19 +338,19 @@ RSpec.describe Spree::PaypalMerchant::Gateway::PaymentSessions do
       it 'creates one payment on the cart, keyed on the PayPal order id' do
         complete
 
-        expect(cart.payments.pluck(:response_code)).to eq([payment_session.external_id])
+        expect(payments_on_cart.pluck(:response_code)).to eq([payment_session.external_id])
       end
 
       it 'completes the payment' do
         complete
 
-        expect(cart.payments.sole).to be_completed
+        expect(payments_on_cart.sole).to be_completed
       end
 
       it 'records the PayPal capture id on the payment' do
         complete
 
-        expect(cart.payments.sole.metadata['paypal_capture_id']).to eq('6F473251BB811841E')
+        expect(payments_on_cart.sole.metadata['paypal_capture_id']).to eq('6F473251BB811841E')
       end
 
       it 'does not place the cart' do
@@ -376,7 +388,7 @@ RSpec.describe Spree::PaypalMerchant::Gateway::PaymentSessions do
       it 'creates a payment that is not completed yet' do
         complete
 
-        expect(cart.payments.sole).to have_attributes(completed?: false, pending?: true)
+        expect(payments_on_cart.sole).to have_attributes(completed?: false, pending?: true)
       end
     end
 
@@ -394,7 +406,7 @@ RSpec.describe Spree::PaypalMerchant::Gateway::PaymentSessions do
         it 'creates no payment' do
           complete
 
-          expect(cart.payments).to be_empty
+          expect(payments_on_cart).to be_empty
         end
       end
     end
@@ -411,7 +423,7 @@ RSpec.describe Spree::PaypalMerchant::Gateway::PaymentSessions do
       it 'creates no payment' do
         complete
 
-        expect(cart.payments).to be_empty
+        expect(payments_on_cart).to be_empty
       end
     end
 
@@ -466,13 +478,128 @@ RSpec.describe Spree::PaypalMerchant::Gateway::PaymentSessions do
       end
     end
 
-    context 'when PayPal API raises an error' do
+    context 'when PayPal refuses the capture' do
       before { allow(orders_api).to receive(:capture_order).and_raise(paypal_api_error(422)) }
 
       it 'marks the session as failed and raises GatewayError' do
         expect { complete }.to raise_error(Spree::Core::GatewayError, /PayPal API error/)
 
         expect(payment_session.reload.status).to eq('failed')
+      end
+    end
+
+    context "when PayPal declines the buyer's funding source" do
+      before { allow(orders_api).to receive(:capture_order).and_raise(paypal_issue_error(422, 'INSTRUMENT_DECLINED')) }
+
+      it 'fails the session and raises a gateway error' do
+        expect { complete }.to raise_error(Spree::Core::GatewayError)
+
+        expect(payment_session.reload).to be_failed
+      end
+
+      it 'creates no payment' do
+        expect { complete }.to raise_error(Spree::Core::GatewayError)
+
+        expect(payments_on_cart).to be_empty
+      end
+    end
+
+    # PayPal can send these after it has captured, so the outcome is unknown:
+    # the session must stay usable for a retry that reads the order again.
+    [401, 408, 429, 500, 503].each do |status_code|
+      context "when the capture is answered with #{status_code}" do
+        before { allow(orders_api).to receive(:capture_order).and_raise(paypal_api_error(status_code)) }
+
+        it 'raises a gateway error and leaves the session pending' do
+          expect { complete }.to raise_error(Spree::Core::GatewayError)
+
+          expect(payment_session.reload).to be_pending
+        end
+      end
+    end
+
+    [429, 503].each do |status_code|
+      context "when a #{status_code} hid a capture that went through" do
+        before { allow(orders_api).to receive(:capture_order).and_raise(paypal_api_error(status_code)) }
+
+        # The first confirm gets the error; PayPal had captured, and the buyer confirms again.
+        def confirm_twice
+          expect { complete }.to raise_error(Spree::Core::GatewayError)
+          allow(orders_api).to receive(:get_order).and_return(paypal_response(captured))
+
+          gateway.complete_payment_session(payment_session: payment_session.reload)
+        end
+
+        it 'settles one completed payment on the retry' do
+          confirm_twice
+
+          expect(payments_on_cart.map { |payment| [payment.response_code, payment.completed?] }).to eq([[payment_session.external_id, true]])
+        end
+
+        it 'completes the session on the retry' do
+          confirm_twice
+
+          expect(payment_session.reload).to be_completed
+        end
+
+        it 'does not capture again on the retry' do
+          confirm_twice
+
+          expect(orders_api).to have_received(:capture_order).once
+        end
+      end
+    end
+
+    [Faraday::TimeoutError, Faraday::ConnectionFailed].each do |transport_error|
+      context "when the capture gets no answer (#{transport_error})" do
+        before { allow(orders_api).to receive(:capture_order).and_raise(transport_error) }
+
+        it 'raises a gateway error and leaves the session pending' do
+          expect { complete }.to raise_error(Spree::Core::GatewayError, /connection error/)
+
+          expect(payment_session.reload).to be_pending
+        end
+      end
+    end
+
+    # A double-submitted confirm: the other request captured first.
+    context 'when PayPal reports the order already captured' do
+      before do
+        allow(orders_api).to receive(:get_order).and_return(paypal_response(approved_order), paypal_response(captured))
+        allow(orders_api).to receive(:capture_order).and_raise(paypal_issue_error(422, 'ORDER_ALREADY_CAPTURED'))
+      end
+
+      it 'reads the order again' do
+        complete
+
+        expect(orders_api).to have_received(:get_order).twice
+      end
+
+      it 'completes the session' do
+        complete
+
+        expect(payment_session.reload).to be_completed
+      end
+
+      it 'settles one completed payment' do
+        complete
+
+        expect(payments_on_cart.sole).to be_completed
+      end
+
+      context 'when the other request has already settled the payment' do
+        before do
+          winner = Spree::PaymentSession.find(payment_session.id)
+          winner.update!(external_data: captured)
+          winner.process
+          winner.settle_payment!(captured: true)
+        end
+
+        it 'keeps one payment and completes the session' do
+          complete
+
+          expect([payments_on_cart.count, payment_session.reload.status]).to eq([1, 'completed'])
+        end
       end
     end
 
@@ -563,13 +690,15 @@ RSpec.describe Spree::PaypalMerchant::Gateway::PaymentSessions do
     end
 
     # Not a refusal: the caller has to be able to ask again.
-    context 'when PayPal times out' do
-      before { allow(orders_api).to receive(:get_order).and_raise(Net::ReadTimeout) }
+    [Faraday::TimeoutError, Faraday::ConnectionFailed].each do |transport_error|
+      context "when PayPal cannot be reached (#{transport_error})" do
+        before { allow(orders_api).to receive(:get_order).and_raise(transport_error) }
 
-      it 'raises the timeout as itself and leaves the session unchanged' do
-        expect { cancel }.to raise_error(Net::ReadTimeout)
+        it 'raises the error as itself and leaves the session unchanged' do
+          expect { cancel }.to raise_error(transport_error)
 
-        expect(payment_session.reload).to be_pending
+          expect(payment_session.reload).to be_pending
+        end
       end
     end
 

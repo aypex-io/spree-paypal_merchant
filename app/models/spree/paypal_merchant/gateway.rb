@@ -1,5 +1,6 @@
 # frozen_string_literal: true
 
+require 'faraday'
 require 'net/http'
 
 module Spree
@@ -12,6 +13,16 @@ module Spree
     # as separate payment methods.
     #
     class Gateway < ::Spree::Gateway
+      ##
+      # PayPal could not be reached, or did not answer in time: the request
+      # may or may not have arrived. The SDK's HTTP client raises the Faraday
+      # errors; this gateway's own HTTP calls raise the Net ones.
+      #
+      CONNECTION_ERRORS = [
+        Faraday::TimeoutError, Faraday::ConnectionFailed,
+        Net::OpenTimeout, Net::ReadTimeout, SocketError, Errno::ECONNREFUSED
+      ].freeze
+
       include PaymentSessions
 
       GatewayResponse = Struct.new(:success, :message, :params, :authorization) do
@@ -236,7 +247,7 @@ module Spree
         yield
       rescue PaypalServerSdk::APIException => e
         raise Spree::Core::GatewayError, "PayPal API error: #{e.message}"
-      rescue Net::OpenTimeout, Net::ReadTimeout, SocketError, Errno::ECONNREFUSED => e
+      rescue *CONNECTION_ERRORS => e
         raise Spree::Core::GatewayError, "PayPal connection error: #{e.message}"
       end
 
