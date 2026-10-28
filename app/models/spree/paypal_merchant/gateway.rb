@@ -74,27 +74,6 @@ module Spree
       end
 
       ##
-      # @return [String]
-      #
-      def description_partial_name
-        'spree_paypal_merchant'
-      end
-
-      ##
-      # @return [String]
-      #
-      def configuration_guide_partial_name
-        'spree_paypal_merchant'
-      end
-
-      ##
-      # @return [String]
-      #
-      def source_partial_name
-        'paypal_merchant'
-      end
-
-      ##
       # Whether the storefront should offer Apple Pay for this method.
       #
       # Domain registration with PayPal is still required; this flag only
@@ -162,51 +141,6 @@ module Spree
             )
           )
         )
-      end
-
-      ##
-      # @raise [NotImplementedError] always — authorize-then-capture is unused
-      #
-      def authorize(_amount_in_cents, _payment_source, _gateway_options = {})
-        raise NotImplementedError, 'PayPal Checkout captures in one step; use #purchase'
-      end
-
-      ##
-      # Purchase is authorize + capture in one step.
-      #
-      # @param amount_in_cents [Integer]
-      # @param payment_source [#paypal_id]
-      # @param gateway_options [Hash]
-      # @return [GatewayResponse]
-      #
-      def purchase(amount_in_cents, payment_source, gateway_options = {})
-        capture(amount_in_cents, payment_source.paypal_id, gateway_options)
-      end
-
-      ##
-      # Capture a previously created PayPal order.
-      #
-      # @param amount_in_cents [Integer]
-      # @param paypal_id [String] PayPal order ID
-      # @param gateway_options [Hash]
-      # @return [GatewayResponse]
-      #
-      def capture(_amount_in_cents, paypal_id, gateway_options = {})
-        protect_from_error do
-          order = find_order(gateway_options[:order_id])
-          return failure('Order not found') unless order
-
-          response = client.orders.capture_order({
-                                                   'id' => paypal_id,
-                                                   'prefer' => 'return=representation'
-                                                 })
-
-          if response.data.status == 'COMPLETED'
-            success(response.data.id, response.data.as_json)
-          else
-            failure('Failed to capture PayPal payment', response.data)
-          end
-        end
       end
 
       ##
@@ -296,13 +230,6 @@ module Spree
       end
 
       private
-
-      def find_order(order_id)
-        return nil unless order_id
-
-        order_number, _payment_number = order_id.split('-')
-        Spree::Order.find_by(number: order_number)
-      end
 
       def protect_from_error
         yield

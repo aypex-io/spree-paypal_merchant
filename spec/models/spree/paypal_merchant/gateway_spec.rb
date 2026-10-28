@@ -69,15 +69,26 @@ RSpec.describe Spree::PaypalMerchant::Gateway do
     end
   end
 
+  it 'has no pre-session capture flow' do
+    # Spree::Gateway delegates authorize/purchase/capture to #provider, so
+    # respond_to? is always true; check that this gateway defines none itself.
+    own_methods = described_class.instance_methods(false) + described_class.private_instance_methods(false)
+
+    expect(own_methods).not_to include(:authorize, :purchase, :capture, :find_order)
+    expect(defined?(Spree::PaypalMerchant::Order)).to be_nil
+    expect(Spree::Order.new).not_to respond_to(:paypal_id)
+  end
+
+  it "finds the store's active PayPal gateway" do
+    gateway
+
+    expect(store.paypal_merchant_gateway).to eq(gateway)
+    expect(Spree::PaymentMethod.paypal_merchant).to include(gateway)
+  end
+
   describe '#client' do
     it 'returns a PayPal SDK client' do
       expect(gateway.client).to be_a(PaypalServerSdk::Client)
-    end
-  end
-
-  describe '#authorize' do
-    it 'raises NotImplementedError' do
-      expect { gateway.authorize(1000, double) }.to raise_error(NotImplementedError)
     end
   end
 
@@ -90,80 +101,6 @@ RSpec.describe Spree::PaypalMerchant::Gateway do
       expect(PaypalServerSdk::RequestLoggingConfiguration).to have_received(:new).with(
         hash_including(log_body: false)
       )
-    end
-  end
-
-  describe '#purchase' do
-    let(:payment_source) { double(paypal_id: 'PAYPAL-ORDER-123') }
-
-    it 'delegates to capture with the paypal_id' do
-      allow(gateway).to receive(:capture)
-      gateway.purchase(1000, payment_source)
-      expect(gateway).to have_received(:capture).with(1000, 'PAYPAL-ORDER-123', {})
-    end
-  end
-
-  describe '#capture' do
-    let(:order) { create(:order, store: store) }
-    let(:gateway_options) { { order_id: "#{order.number}-123" } }
-    let(:paypal_id) { 'PAYPAL-ORDER-123' }
-
-    context 'when capture is successful' do
-      let(:response_data) { double(status: 'COMPLETED', id: paypal_id, as_json: { 'id' => paypal_id }) }
-      let(:response) { double(data: response_data) }
-
-      before do
-        orders_api = double
-        allow(gateway).to receive(:client).and_return(double(orders: orders_api))
-        allow(orders_api).to receive(:capture_order).with({
-                                                            'id' => paypal_id,
-                                                            'prefer' => 'return=representation'
-                                                          }).and_return(response)
-      end
-
-      it 'returns a successful billing response' do
-        result = gateway.capture(1000, paypal_id, gateway_options)
-        expect(result.success?).to be true
-      end
-    end
-
-    context 'when capture status is not COMPLETED' do
-      let(:response_data) { double(status: 'PENDING', id: paypal_id, as_json: { 'id' => paypal_id }) }
-      let(:response) { double(data: response_data) }
-
-      before do
-        orders_api = double
-        allow(gateway).to receive(:client).and_return(double(orders: orders_api))
-        allow(orders_api).to receive(:capture_order).and_return(response)
-      end
-
-      it 'returns a failure response' do
-        result = gateway.capture(1000, paypal_id, gateway_options)
-        expect(result.success?).to be false
-      end
-    end
-
-    context 'when the order is not found' do
-      it 'returns a failure response' do
-        result = gateway.capture(1000, paypal_id, { order_id: 'NONEXISTENT-123' })
-        expect(result.message).to eq('Order not found')
-      end
-    end
-
-    context 'when PayPal API raises an error' do
-      before do
-        orders_api = double
-        allow(gateway).to receive(:client).and_return(double(orders: orders_api))
-        allow(orders_api).to receive(:capture_order).and_raise(
-          PaypalServerSdk::APIException.new('The specified resource does not exist.', double(status_code: 404))
-        )
-      end
-
-      it 'raises a GatewayError' do
-        expect do
-          gateway.capture(1000, paypal_id, gateway_options)
-        end.to raise_error(Spree::Core::GatewayError, /PayPal API error/)
-      end
     end
   end
 
