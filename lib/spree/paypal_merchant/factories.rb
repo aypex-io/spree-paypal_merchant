@@ -28,10 +28,11 @@ FactoryBot.define do
   end
 
   factory :paypal_merchant_payment_session, class: 'Spree::PaymentSessions::PaypalMerchant' do
-    association :order, factory: :order
+    association :cart, factory: :cart_with_line_items
+    order { nil }
     association :payment_method, factory: :paypal_merchant_gateway
-    amount { order.total }
-    currency { order.currency }
+    amount { cart.total }
+    currency { cart.currency }
     status { 'pending' }
     external_id { "PAYPAL-ORDER-#{SecureRandom.hex(8).upcase}" }
     external_data do
@@ -43,18 +44,6 @@ FactoryBot.define do
       external_data do
         JSON.parse(File.read(Spree::PaypalMerchant::Engine.root.join('spec/fixtures/captured_paypal_order.json')))
       end
-    end
-  end
-
-  factory :paypal_merchant_order, class: 'Spree::PaypalMerchant::Order' do
-    paypal_id { 'PAY-ORDER-ID' }
-    order { create(:order) }
-    payment_method { create(:paypal_merchant_gateway) }
-    amount { order.total }
-    data { JSON.parse(File.read(Spree::PaypalMerchant::Engine.root.join('spec/fixtures/paypal_order.json'))) }
-
-    factory :captured_paypal_merchant_order do
-      data { JSON.parse(File.read(Spree::PaypalMerchant::Engine.root.join('spec/fixtures/captured_paypal_order.json'))) }
     end
   end
 end
