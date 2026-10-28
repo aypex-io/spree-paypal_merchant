@@ -123,7 +123,7 @@ RSpec.describe Spree::PaypalMerchant::Gateway do
 
   describe '#create_profile' do
     let(:user) { create(:user) }
-    let(:order) { create(:order_with_line_items, user: user, store: store) }
+    let(:order) { create(:order_with_line_items, customer: user, store: store) }
     let(:payment_source) do
       Spree::PaypalMerchant::PaymentSources::Paypal.create!(
         payment_method: gateway,

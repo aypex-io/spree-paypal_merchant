@@ -16,6 +16,11 @@ RSpec.describe Spree::PaymentSessions::PaypalMerchant do
       data['purchase_units'][0]['payments']['captures'][0]['status'] = 'PENDING'
     end
   end
+  let(:declined_data) do
+    fixture('captured_paypal_order').tap do |data|
+      data['purchase_units'][0]['payments']['captures'][0]['status'] = 'DECLINED'
+    end
+  end
   let(:external_data) { captured_data }
   let(:cart) { create(:cart_with_line_items) }
   # A payment can only settle through a method that belongs to the cart's store.
@@ -120,15 +125,46 @@ RSpec.describe Spree::PaymentSessions::PaypalMerchant do
   end
 
   describe '#accepted?' do
-    it 'is true when the order is COMPLETED' do
+    it 'is true when the capture is COMPLETED' do
       expect(session.accepted?).to be true
     end
 
-    context 'when the order is not COMPLETED' do
+    # PayPal can report an order as COMPLETED whose capture was declined.
+    context 'when the order is COMPLETED but its capture was DECLINED' do
+      let(:external_data) { declined_data }
+
+      it 'is false' do
+        expect(session.accepted?).to be false
+      end
+    end
+
+    context 'when the capture is pending' do
+      let(:external_data) { pending_data }
+
+      it 'is false' do
+        expect(session.accepted?).to be false
+      end
+    end
+
+    context 'when the order is not captured' do
       let(:external_data) { created_data }
 
       it 'is false' do
         expect(session.accepted?).to be false
+      end
+    end
+  end
+
+  describe '#successful?' do
+    it 'is true when the capture is COMPLETED' do
+      expect(session.successful?).to be true
+    end
+
+    context 'when the order is COMPLETED but its capture was DECLINED' do
+      let(:external_data) { declined_data }
+
+      it 'is false' do
+        expect(session.successful?).to be false
       end
     end
   end
@@ -202,6 +238,19 @@ RSpec.describe Spree::PaymentSessions::PaypalMerchant do
       end
     end
 
+    # The money is already captured, so an unknown wallet must not stop the payment.
+    context 'when PayPal reports a payment source the gem does not support' do
+      let(:external_data) { captured_data.merge('payment_source' => { 'venmo' => { 'email_address' => 'buyer@example.com' } }) }
+
+      before { allow(Rails.logger).to receive(:warn) }
+
+      it 'completes a payment without a source' do
+        payment = session.settle_payment!(captured: true)
+
+        expect(payment).to have_attributes(source: nil, completed?: true)
+      end
+    end
+
     context 'when the capture is still pending' do
       let(:external_data) { pending_data }
 
@@ -215,6 +264,30 @@ RSpec.describe Spree::PaymentSessions::PaypalMerchant do
         payment = session.settle_payment!(captured: false)
 
         expect(payment.reload.metadata['paypal_capture_id']).to be_present
+      end
+    end
+  end
+
+  describe '#payment_source_for_settlement' do
+    context 'when PayPal reports a payment source the gem does not support' do
+      let(:external_data) { captured_data.merge('payment_source' => { 'venmo' => { 'email_address' => 'buyer@example.com' } }) }
+
+      before { allow(Rails.logger).to receive(:warn) }
+
+      it 'returns nil' do
+        expect(session.payment_source_for_settlement).to be_nil
+      end
+
+      it 'logs the unsupported source type' do
+        session.payment_source_for_settlement
+
+        expect(Rails.logger).to have_received(:warn).with(/venmo/)
+      end
+
+      it 'does not log the buyer details' do
+        session.payment_source_for_settlement
+
+        expect(Rails.logger).not_to have_received(:warn).with(/buyer@example\.com/)
       end
     end
   end

@@ -9,6 +9,21 @@ module Spree
     SETTLED_CAPTURE_STATUSES = %w[COMPLETED DECLINED FAILED].freeze
 
     ##
+    # Capture statuses where the buyer has paid: the funds moved, or are on their way.
+    #
+    PAID_CAPTURE_STATUSES = %w[COMPLETED PENDING].freeze
+
+    ##
+    # The first capture of the first purchase unit of a PayPal order.
+    #
+    # @param paypal_order [Hash, NilClass] a PayPal order as JSON
+    # @return [Hash, NilClass]
+    #
+    def self.paypal_capture_in(paypal_order)
+      paypal_order&.dig('purchase_units', 0, 'payments', 'captures', 0)
+    end
+
+    ##
     # @return [String]
     #
     def paypal_order_id
@@ -21,7 +36,7 @@ module Spree
     # @return [Hash, NilClass]
     #
     def paypal_capture
-      external_data&.dig('purchase_units', 0, 'payments', 'captures', 0)
+      self.class.paypal_capture_in(external_data)
     end
 
     ##
@@ -60,10 +75,13 @@ module Spree
     end
 
     ##
+    # Whether the funds were captured. Reads the capture, not the order:
+    # PayPal can report an order as COMPLETED whose capture was declined.
+    #
     # @return [TrueClass, FalseClass]
     #
     def accepted?
-      external_data&.dig('status') == 'COMPLETED'
+      paypal_capture_status == 'COMPLETED'
     end
 
     ##
@@ -92,6 +110,9 @@ module Spree
     # Runs inside the settlement lock, so it reads only what
     # {#prepare_for_settlement!} already stored.
     #
+    # A source type the gem does not know is logged and skipped: the funds
+    # are already captured, so the payment settles without a source.
+    #
     # @return [Spree::PaymentSource, NilClass]
     #
     def payment_source_for_settlement
@@ -102,6 +123,12 @@ module Spree
         gateway: payment_method,
         owner: owner
       ).call
+    rescue ArgumentError
+      Rails.logger.warn(
+        "[spree-paypal_merchant] unsupported PayPal payment source (#{paypal_payment_source.keys.join(', ')}); " \
+        "settling payment session #{id} without a source"
+      )
+      nil
     end
 
     ##

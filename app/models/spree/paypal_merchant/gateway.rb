@@ -104,21 +104,22 @@ module Spree
       end
 
       ##
-      # Persist a gateway-customer profile for a signed-in buyer.
+      # Persist a gateway-customer profile for a signed-in buyer. Guests (an
+      # owner with no customer) get none.
       #
-      # @param payment [Spree::Payment]
+      # @param payment [Spree::Payment] owned by a cart or an order
       # @return [Spree::GatewayCustomer, NilClass]
       #
       def create_profile(payment)
-        user = payment.order.user
-        return if user.blank?
+        customer = payment.owner&.customer
+        return if customer.blank?
         return if payment.source.blank?
         return unless payment.source.is_a?(PaymentSources::Paypal)
 
         paypal_account_id = payment.source.account_id
         return if paypal_account_id.blank?
 
-        payment.payment_method.gateway_customers.find_or_create_by(user: user, profile_id: paypal_account_id)
+        payment.payment_method.gateway_customers.find_or_create_by(customer: customer, profile_id: paypal_account_id)
       end
 
       ##
