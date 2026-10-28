@@ -3,6 +3,12 @@
 module Spree
   class PaymentSessions::PaypalMerchant < PaymentSession
     ##
+    # Capture statuses that will not change again: the funds moved, or they never will.
+    # Anything else (PENDING, or no capture yet) still needs to be re-read from PayPal.
+    #
+    SETTLED_CAPTURE_STATUSES = %w[COMPLETED DECLINED FAILED].freeze
+
+    ##
     # @return [String]
     #
     def paypal_order_id
@@ -10,10 +16,33 @@ module Spree
     end
 
     ##
+    # The first capture of the first purchase unit.
+    #
+    # @return [Hash, NilClass]
+    #
+    def paypal_capture
+      external_data&.dig('purchase_units', 0, 'payments', 'captures', 0)
+    end
+
+    ##
     # @return [String, NilClass]
     #
     def paypal_capture_id
-      external_data&.dig('purchase_units', 0, 'payments', 'captures', 0, 'id')
+      paypal_capture&.dig('id')
+    end
+
+    ##
+    # @return [String, NilClass]
+    #
+    def paypal_capture_status
+      paypal_capture&.dig('status')
+    end
+
+    ##
+    # @return [TrueClass, FalseClass]
+    #
+    def capture_settled?
+      SETTLED_CAPTURE_STATUSES.include?(paypal_capture_status)
     end
 
     ##
@@ -45,50 +74,48 @@ module Spree
     end
 
     ##
-    # Creates or finds the Spree::Payment for this session.
+    # Reads the PayPal order before settlement, so the settlement lock holds
+    # across no PayPal I/O. Skipped once the capture has reached a final status.
     #
-    # Defers creation until paypal_capture_id is present so response_code
-    # is always the capture ID (required for refunds via Gateway#credit).
+    # @return [Spree::PaymentSessions::PaypalMerchant] self
     #
-    # @param metadata [Hash]
-    # @return [Spree::Payment, NilClass]
-    #
-    def find_or_create_payment!(metadata = {})
-      return unless persisted?
-      return payment if payment.present?
-      return unless paypal_capture_id
+    def prepare_for_settlement!
+      return self if capture_settled?
 
-      order.with_lock do
-        existing_payment = order.payments.where(
-          payment_method: payment_method,
-          response_code: paypal_capture_id
-        ).first
-
-        return existing_payment if existing_payment.present?
-
-        source = create_payment_source!
-
-        order.payments.create!(
-          payment_method: payment_method,
-          amount: amount,
-          response_code: paypal_capture_id,
-          source: source,
-          skip_source_requirement: true,
-          private_metadata: metadata
-        )
-      end
+      response = payment_method.fetch_paypal_order(external_id)
+      update!(external_data: response.data.as_json)
+      self
     end
 
-    private
-
-    def create_payment_source!
+    ##
+    # Builds the wallet, Apple Pay, or card source from the PayPal order.
+    # Runs inside the settlement lock, so it reads only what
+    # {#prepare_for_settlement!} already stored.
+    #
+    # @return [Spree::PaymentSource, NilClass]
+    #
+    def payment_source_for_settlement
       return nil if paypal_payment_source.blank?
 
       Spree::PaypalMerchant::CreateSource.new(
         paypal_payment_source: paypal_payment_source,
         gateway: payment_method,
-        owner: order
+        owner: owner
       ).call
+    end
+
+    ##
+    # Keeps the PayPal capture id on the payment: refunds are issued against
+    # the capture, while the payment itself is keyed on the PayPal order id.
+    #
+    # @param payment [Spree::Payment]
+    # @param metadata [Hash]
+    # @return [void]
+    #
+    def apply_settlement_metadata(payment, metadata)
+      super
+      capture_id = paypal_capture_id
+      payment.metadata['paypal_capture_id'] = capture_id if capture_id.present?
     end
   end
 end

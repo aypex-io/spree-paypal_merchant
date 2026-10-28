@@ -92,6 +92,23 @@ RSpec.describe Spree::PaypalMerchant::Gateway do
     end
   end
 
+  describe '#fetch_paypal_order' do
+    let(:orders_api) { instance_double(PaypalServerSdk::OrdersController, get_order: paypal_response) }
+    let(:paypal_response) { double(data: double(status: 'COMPLETED')) }
+
+    before { allow(gateway).to receive(:client).and_return(double(orders: orders_api)) }
+
+    it 'asks PayPal for the order with its captures' do
+      gateway.fetch_paypal_order('ORDER-1')
+
+      expect(orders_api).to have_received(:get_order).with('id' => 'ORDER-1', 'prefer' => 'return=representation')
+    end
+
+    it 'returns the PayPal response' do
+      expect(gateway.fetch_paypal_order('ORDER-1')).to eq(paypal_response)
+    end
+  end
+
   describe '#client logging' do
     it 'does not log PayPal request bodies' do
       allow(PaypalServerSdk::RequestLoggingConfiguration).to receive(:new).and_call_original

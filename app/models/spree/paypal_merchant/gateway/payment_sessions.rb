@@ -131,6 +131,16 @@ module Spree
         end
 
         ##
+        # Reads a PayPal order, including its captures.
+        #
+        # @param paypal_order_id [String]
+        # @return [PaypalServerSdk::ApiResponse]
+        #
+        def fetch_paypal_order(paypal_order_id)
+          client.orders.get_order('id' => paypal_order_id, 'prefer' => 'return=representation')
+        end
+
+        ##
         # Parses an incoming PayPal webhook into a payment-session action.
         #
         # @param raw_body [String]
