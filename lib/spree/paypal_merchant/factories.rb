@@ -2,7 +2,8 @@
 
 FactoryBot.define do
   factory :paypal_merchant_gateway, class: 'Spree::PaypalMerchant::Gateway' do
-    name { 'PayPal Checkout' }
+    # Names are unique per store, and several gateways can share one store.
+    sequence(:name) { |n| "PayPal Checkout #{n}" }
     association :store, factory: :store
     preferences do
       {
@@ -30,9 +31,10 @@ FactoryBot.define do
   factory :paypal_merchant_payment_session, class: 'Spree::PaymentSessions::PaypalMerchant' do
     association :cart, factory: :cart_with_line_items
     order { nil }
-    association :payment_method, factory: :paypal_merchant_gateway
-    amount { cart.total }
-    currency { cart.currency }
+    # A payment settles only through a method in its owner's store.
+    payment_method { association :paypal_merchant_gateway, store: (cart || order).store }
+    amount { (cart || order).total }
+    currency { (cart || order).currency }
     status { 'pending' }
     external_id { "PAYPAL-ORDER-#{SecureRandom.hex(8).upcase}" }
     external_data do

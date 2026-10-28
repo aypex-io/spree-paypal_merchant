@@ -24,6 +24,21 @@ RSpec.describe Spree::PaymentSessions::PaypalMerchant do
     create(:paypal_merchant_payment_session, cart: cart, payment_method: gateway, external_data: external_data)
   end
 
+  describe 'factory' do
+    it 'builds a session that can settle with its default cart and gateway' do
+      default_session = create(:paypal_merchant_payment_session, external_data: captured_data)
+
+      expect(default_session.settle_payment!(captured: true)).to be_completed
+    end
+
+    it 'builds a gateway in the cart store for each of several carts in one store' do
+      store = create(:store)
+      sessions = Array.new(2) { create(:paypal_merchant_payment_session, cart: create(:cart_with_line_items, store: store)) }
+
+      expect(sessions.map { |each_session| each_session.payment_method.store_id }).to eq([store.id, store.id])
+    end
+  end
+
   describe '#paypal_order_id' do
     let(:session) { create(:paypal_merchant_payment_session, external_id: 'ORDER-123') }
 
