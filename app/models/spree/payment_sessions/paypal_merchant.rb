@@ -87,7 +87,7 @@ module Spree
       Spree::PaypalMerchant::CreateSource.new(
         paypal_payment_source: paypal_payment_source,
         gateway: payment_method,
-        order: order
+        owner: order
       ).call
     end
   end

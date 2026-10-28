@@ -6,7 +6,7 @@ RSpec.describe Spree::PaypalMerchant::CreateSource do
   let(:store) { create(:store) }
   let(:gateway) { create(:paypal_merchant_gateway, store: store) }
   let(:user) { create(:user) }
-  let(:order) { create(:order_with_line_items, store: store, user: user) }
+  let(:order) { create(:order_with_line_items, store: store, customer: user) }
 
   describe '#call' do
     context 'with a PayPal wallet source' do
@@ -24,7 +24,7 @@ RSpec.describe Spree::PaypalMerchant::CreateSource do
         }
       end
 
-      subject { described_class.new(paypal_payment_source: paypal_payment_source, gateway: gateway, order: order).call }
+      subject { described_class.new(paypal_payment_source: paypal_payment_source, gateway: gateway, owner: order).call }
 
       it 'creates a PayPal payment source' do
         expect { subject }.to change(Spree::PaypalMerchant::PaymentSources::Paypal, :count).by(1)
@@ -35,19 +35,55 @@ RSpec.describe Spree::PaypalMerchant::CreateSource do
       end
 
       it 'reuses the existing source for the same PayPal account' do
-        described_class.new(paypal_payment_source: paypal_payment_source, gateway: gateway, order: order).call
+        described_class.new(paypal_payment_source: paypal_payment_source, gateway: gateway, owner: order).call
         expect { subject }.not_to change(Spree::PaypalMerchant::PaymentSources::Paypal, :count)
       end
 
+      context 'when the owner is a cart' do
+        let(:customer) { create(:user) }
+        let(:cart) { create(:cart, store: store, customer: customer) }
+
+        subject { described_class.new(paypal_payment_source: paypal_payment_source, gateway: gateway, owner: cart).call }
+
+        it 'assigns the cart\'s customer' do
+          expect(subject.customer).to eq(customer)
+        end
+
+        context 'with a guest cart' do
+          let(:cart) { create(:cart, store: store, customer: nil) }
+
+          it 'builds a source for a guest cart' do
+            expect { subject }.not_to raise_error
+            expect(subject.customer).to be_nil
+          end
+
+          it 'keys the fallback profile id on the cart when PayPal sends no account id' do
+            source = described_class.new(
+              paypal_payment_source: { 'paypal' => {} }, gateway: gateway, owner: cart
+            ).call
+
+            expect(source.gateway_payment_profile_id).to eq("paypal-#{cart.prefixed_id}")
+          end
+        end
+      end
+
+      context 'without an owner' do
+        it 'falls back to a guest profile id' do
+          source = described_class.new(paypal_payment_source: { 'paypal' => {} }, gateway: gateway).call
+
+          expect(source.gateway_payment_profile_id).to eq('paypal-guest')
+        end
+      end
+
       context 'when a guest later signs in' do
-        let(:guest_order) { create(:order_with_line_items, store: store, user: nil) }
+        let(:guest_order) { create(:order_with_line_items, store: store, customer: nil) }
 
-        it 'associates the user to the existing source' do
-          source = described_class.new(paypal_payment_source: paypal_payment_source, gateway: gateway, order: guest_order).call
-          expect(source.user).to be_nil
+        it 'associates the customer to the existing source' do
+          source = described_class.new(paypal_payment_source: paypal_payment_source, gateway: gateway, owner: guest_order).call
+          expect(source.customer).to be_nil
 
-          source = described_class.new(paypal_payment_source: paypal_payment_source, gateway: gateway, order: order, user: user).call
-          expect(source.user).to eq(user)
+          source = described_class.new(paypal_payment_source: paypal_payment_source, gateway: gateway, owner: order, customer: user).call
+          expect(source.customer).to eq(user)
         end
       end
     end
@@ -68,7 +104,7 @@ RSpec.describe Spree::PaypalMerchant::CreateSource do
         }
       end
 
-      subject { described_class.new(paypal_payment_source: paypal_payment_source, gateway: gateway, order: order).call }
+      subject { described_class.new(paypal_payment_source: paypal_payment_source, gateway: gateway, owner: order).call }
 
       it 'creates an Apple Pay payment source' do
         expect { subject }.to change(Spree::PaypalMerchant::PaymentSources::ApplePay, :count).by(1)
@@ -96,7 +132,7 @@ RSpec.describe Spree::PaypalMerchant::CreateSource do
         }
       end
 
-      subject { described_class.new(paypal_payment_source: paypal_payment_source, gateway: gateway, order: order).call }
+      subject { described_class.new(paypal_payment_source: paypal_payment_source, gateway: gateway, owner: order).call }
 
       it 'creates a card payment source' do
         expect { subject }.to change(Spree::PaypalMerchant::PaymentSources::Card, :count).by(1)
@@ -106,7 +142,7 @@ RSpec.describe Spree::PaypalMerchant::CreateSource do
     context 'with an empty PayPal wallet hash' do
       let(:paypal_payment_source) { { 'paypal' => {} } }
 
-      subject { described_class.new(paypal_payment_source: paypal_payment_source, gateway: gateway, order: order).call }
+      subject { described_class.new(paypal_payment_source: paypal_payment_source, gateway: gateway, owner: order).call }
 
       it 'creates a PayPal payment source instead of raising' do
         expect { subject }.to change(Spree::PaypalMerchant::PaymentSources::Paypal, :count).by(1)
@@ -119,7 +155,7 @@ RSpec.describe Spree::PaypalMerchant::CreateSource do
           described_class.new(
             paypal_payment_source: { 'venmo' => { 'user_name' => 'x' } },
             gateway: gateway,
-            order: order
+            owner: order
           ).call
         end.to raise_error(ArgumentError, /Unsupported PayPal payment source/)
       end

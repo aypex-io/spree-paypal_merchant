@@ -12,14 +12,14 @@ module Spree
       ##
       # @param paypal_payment_source [Hash]
       # @param gateway [Spree::PaypalMerchant::Gateway]
-      # @param order [Spree::Order, NilClass]
-      # @param user [Spree::User, NilClass]
+      # @param owner [Spree::Cart, Spree::Order, NilClass] the cart during checkout, or an order
+      # @param customer [Spree::User, NilClass] defaults to the owner's customer
       #
-      def initialize(paypal_payment_source:, gateway:, order: nil, user: nil)
+      def initialize(paypal_payment_source:, gateway:, owner: nil, customer: nil)
         @paypal_payment_source = paypal_payment_source.with_indifferent_access
         @gateway = gateway
-        @user = user || order&.user
-        @order = order
+        @customer = customer || owner&.customer
+        @owner = owner
       end
 
       ##
@@ -40,17 +40,17 @@ module Spree
 
       private
 
-      attr_reader :gateway, :user, :paypal_payment_source, :order
+      attr_reader :gateway, :customer, :paypal_payment_source, :owner
 
       def create_paypal_source
         wallet = paypal_payment_source[:paypal] || {}
-        profile_id = wallet[:account_id].presence || "paypal-#{order&.number || 'guest'}"
+        profile_id = wallet[:account_id].presence || "paypal-#{owner&.prefixed_id || 'guest'}"
         source = PaymentSources::Paypal.find_or_initialize_by(
           payment_method: gateway,
           gateway_payment_profile_id: profile_id
         )
         source.update!(
-          user: user,
+          customer: customer,
           email: wallet[:email_address],
           name: full_name(wallet[:name]),
           account_id: wallet[:account_id],
@@ -71,7 +71,7 @@ module Spree
           gateway_payment_profile_id: profile_id
         )
         source.update!(
-          user: user,
+          customer: customer,
           name: full_name(wallet[:name]).presence || wallet[:name],
           email: wallet[:email_address],
           card_brand: card[:brand],
@@ -90,7 +90,7 @@ module Spree
           gateway_payment_profile_id: profile_id
         )
         source.update!(
-          user: user,
+          customer: customer,
           name: card[:name],
           card_brand: card[:brand],
           last_digits: card[:last_digits],
