@@ -92,6 +92,22 @@ RSpec.describe Spree::PaypalMerchant::Gateway do
     end
   end
 
+  describe '#client limits' do
+    before { allow(PaypalServerSdk::Client).to receive(:new).and_call_original }
+
+    it 'builds the client with the request timeout and the retry count' do
+      gateway.client
+
+      expect(PaypalServerSdk::Client).to have_received(:new).with(
+        hash_including(timeout: Spree::PaypalMerchant::Gateway::REQUEST_TIMEOUT, max_retries: Spree::PaypalMerchant::Gateway::MAX_RETRIES)
+      )
+    end
+
+    it 'limits a request to 15 seconds and retries a read 3 times' do
+      expect([Spree::PaypalMerchant::Gateway::REQUEST_TIMEOUT, Spree::PaypalMerchant::Gateway::MAX_RETRIES]).to eq([15, 3])
+    end
+  end
+
   # Stubbed at the HTTP level, so the SDK's own retry middleware is what runs.
   describe '#client retries' do
     let(:paypal_api) { 'https://api-m.sandbox.paypal.com' }

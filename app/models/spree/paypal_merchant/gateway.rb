@@ -32,6 +32,14 @@ module Spree
       #
       MAX_RETRIES = 3
 
+      ##
+      # Seconds the SDK allows each attempt to open, send and read. It bounds a
+      # hanging PayPal to about one old 60 second wait across the GET retries;
+      # a capture that exceeds it is an ambiguous outcome that leaves the
+      # session retryable.
+      #
+      REQUEST_TIMEOUT = 15
+
       include PaymentSessions
 
       GatewayResponse = Struct.new(:success, :message, :params, :authorization) do
@@ -152,6 +160,7 @@ module Spree
             o_auth_client_secret: preferred_client_secret
           ),
           environment: preferred_test_mode ? PaypalServerSdk::Environment::SANDBOX : PaypalServerSdk::Environment::PRODUCTION,
+          timeout: REQUEST_TIMEOUT,
           max_retries: MAX_RETRIES,
           logging_configuration: PaypalServerSdk::LoggingConfiguration.new(
             log_level: Logger::WARN,
