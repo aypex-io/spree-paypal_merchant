@@ -51,11 +51,12 @@ module Spree
       private
 
       def purchase_unit
-        # A gift card or store credit pays part of the order, so the breakdown
-        # and items (which always sum to the full total) can't describe what
-        # PayPal charges. PayPal accepts an amount on its own.
+        # PayPal accepts an amount on its own. That is all we send when the
+        # breakdown and items can't describe the charge: a gift card or store
+        # credit pays part of the order (they always sum to the full total), or
+        # the breakdown doesn't add up to the amount (PayPal would refuse it).
         args =
-          if partial_charge?
+          if amount_alone?
             { amount: PaypalServerSdk::AmountWithBreakdown.new(currency_code: currency_code,
                                                                value: format_amount(charge_amount)) }
           else
@@ -78,24 +79,44 @@ module Spree
         charge_amount.to_d != owner.total.to_d
       end
 
-      # NOTE: the breakdown only sends additional (non-included) tax — sending
-      # the full tax_total double-counts VAT on tax-inclusive markets and
-      # trips AMOUNT_MISMATCH. Do not change to owner.tax_total.
-      #
-      # item_total + shipping + handling + tax_total - discount adds up to the
-      # total, which PayPal checks to the minor unit.
+      def amount_alone?
+        partial_charge? || !breakdown_balances?
+      end
+
       def amount_with_breakdown
         PaypalServerSdk::AmountWithBreakdown.new(
           currency_code: currency_code,
           value: format_amount(owner.total),
-          breakdown: PaypalServerSdk::AmountBreakdown.new(
-            item_total: paypal_money(owner.item_total),
-            shipping: paypal_money(owner.delivery_total),
-            handling: handling,
-            tax_total: paypal_money(owner.additional_tax_total),
-            discount: paypal_money(owner.discount_total&.abs)
-          )
+          breakdown: breakdown
         )
+      end
+
+      # NOTE: the breakdown only sends additional (non-included) tax — sending
+      # the full tax_total double-counts VAT on tax-inclusive markets and
+      # trips AMOUNT_MISMATCH. Do not change to owner.tax_total.
+      def breakdown
+        @breakdown ||= PaypalServerSdk::AmountBreakdown.new(
+          item_total: paypal_money(owner.item_total),
+          shipping: paypal_money(owner.delivery_total),
+          handling: handling,
+          tax_total: paypal_money(owner.additional_tax_total),
+          discount: paypal_money(discount_total)
+        )
+      end
+
+      # PayPal checks item_total + shipping + handling + tax_total - discount
+      # against the amount, to the minor unit, and refuses the order when they
+      # differ. Spree's own totals add up, so this only fails when a total is
+      # out of step with the rest.
+      def breakdown_balances?
+        charges = [breakdown.item_total, breakdown.shipping, breakdown.handling, breakdown.tax_total].compact
+        charges.sum { |money| money.value.to_d } - breakdown.discount.value.to_d == format_amount(owner.total).to_d
+      end
+
+      # Every discount row, promotion and manual: the owner's total takes off
+      # both, while its discount_total counts promotions only.
+      def discount_total
+        @discount_total ||= owner.discounts.sum(:amount).abs
       end
 
       # Fees (a handling or payment charge, say) are PayPal's `handling`. Left

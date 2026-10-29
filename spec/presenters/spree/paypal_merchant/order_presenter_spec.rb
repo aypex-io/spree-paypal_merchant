@@ -83,13 +83,92 @@ RSpec.describe Spree::PaypalMerchant::OrderPresenter do
   end
 
   context 'discount' do
-    it 'passes a positive number to PayPal for a negative discount_total' do
-      allow(cart).to receive(:discount_total).and_return(BigDecimal('-3'))
-      expect(breakdown.discount.value).to eq('3.00')
+    # A discount row on the cart's line, with the totals recalculated to take it off.
+    def add_manual_discount(cart, discount_amount)
+      create(:discount, line_item: cart.line_items.first, order: nil, cart: cart, kind: 'manual', amount: -discount_amount)
+      cart.recalculate_totals!
+    end
+
+    def add_promotion_discount(cart, discount_amount)
+      promotion = create(:promotion_with_order_adjustment, weighted_order_adjustment_amount: discount_amount)
+      create(:order_promotion, order: nil, cart: cart, promotion: promotion)
+      cart.recalculate_totals!
     end
 
     it 'sends zero when nothing is discounted' do
       expect(breakdown.discount.value).to eq('0.00')
+    end
+
+    context 'when a promotion discounts the cart' do
+      before { add_promotion_discount(cart, 3) }
+
+      it 'passes a positive number to PayPal for the negative discount' do
+        expect(breakdown.discount.value).to eq('3.00')
+      end
+
+      it 'adds up to the amount PayPal charges' do
+        expect([amount.value, breakdown_sum]).to eq(['7.00', 7.to_d])
+      end
+    end
+
+    # Spree's discount_total counts promotions only, but the total takes off a
+    # manual discount too.
+    context 'when a manual discount takes money off the cart' do
+      before { add_manual_discount(cart, 3) }
+
+      it 'counts the manual discount' do
+        expect(breakdown.discount.value).to eq('3.00')
+      end
+
+      it 'adds up to the amount PayPal charges' do
+        expect([amount.value, breakdown_sum]).to eq(['7.00', 7.to_d])
+      end
+
+      it 'still sends the items' do
+        expect(items).not_to be_nil
+      end
+    end
+
+    context 'when a promotion and a manual discount both apply' do
+      before do
+        add_promotion_discount(cart, 3)
+        add_manual_discount(cart, 2)
+      end
+
+      it 'counts both' do
+        expect(breakdown.discount.value).to eq('5.00')
+      end
+
+      it 'adds up to the amount PayPal charges' do
+        expect([amount.value, breakdown_sum]).to eq(['5.00', 5.to_d])
+      end
+    end
+  end
+
+  # PayPal refuses an order whose breakdown doesn't add up to the amount, so
+  # when it can't, the amount goes alone.
+  context 'when the totals cannot balance' do
+    let(:cart) { create(:cart_ready_for_delivery) }
+
+    # Delivery moved without the total following it.
+    before do
+      cart.update_columns(delivery_total: 4) # rubocop:disable Rails/SkipsModelValidations
+    end
+
+    it 'sends the amount, as the total' do
+      expect(amount.value).to eq('20.00')
+    end
+
+    it 'sends no breakdown' do
+      expect(breakdown).to be_nil
+    end
+
+    it 'sends no items' do
+      expect(items).to be_nil
+    end
+
+    it 'still sends the shipping address' do
+      expect(purchase_unit.shipping).not_to be_nil
     end
   end
 
@@ -97,7 +176,7 @@ RSpec.describe Spree::PaypalMerchant::OrderPresenter do
     context 'tax-inclusive cart (e.g. UK/EU VAT)' do
       before do
         allow(cart).to receive_messages(item_total: 120.0, included_tax_total: 20.0, additional_tax_total: 0.0, tax_total: 20.0,
-                                        delivery_total: 0.0, discount_total: 0, total: 120.0)
+                                        delivery_total: 0.0, total: 120.0)
       end
 
       it 'sends only additional tax so it does not double-count included VAT' do
@@ -112,7 +191,7 @@ RSpec.describe Spree::PaypalMerchant::OrderPresenter do
     context 'tax-exclusive cart (e.g. US)' do
       before do
         allow(cart).to receive_messages(item_total: 100.0, included_tax_total: 0.0, additional_tax_total: 8.0, tax_total: 8.0,
-                                        delivery_total: 5.0, discount_total: 0, total: 113.0)
+                                        delivery_total: 5.0, total: 113.0)
       end
 
       it 'sends additional_tax_total' do
