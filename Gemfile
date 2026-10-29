@@ -16,7 +16,7 @@ group :development, :test do
   gem 'dotenv'
   gem 'rubocop'
   gem 'rubocop-rails'
-  gem 'spree_dev_tools'
+  gem 'spree_dev_tools', '>= 1.0.0.beta2'
   gem 'vcr'
   gem 'webmock'
   gem 'yard'
