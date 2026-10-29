@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require 'net/http'
+require 'openssl'
 
 module Spree
   module PaypalMerchant
@@ -18,6 +19,18 @@ module Spree
         # request: rejected credentials, a request timeout, a rate limit.
         #
         AMBIGUOUS_CLIENT_ERROR_STATUSES = [401, 408, 429].freeze
+
+        ##
+        # What the gem's own calls to PayPal (the webhook signature check and
+        # the Card Fields token) raise when PayPal could not be asked or did
+        # not answer properly: a timeout, a refused or reset connection, a
+        # failed TLS handshake, a broken HTTP exchange, a body that is not
+        # JSON. A signature check that fails this way is answered 401, so
+        # PayPal sends the event again.
+        #
+        OWN_REQUEST_ERRORS = [
+          Timeout::Error, IOError, SystemCallError, OpenSSL::SSL::SSLError, Net::ProtocolError, SocketError, JSON::ParserError
+        ].freeze
 
         ##
         # The webhook events the gem settles, and the action Spree 6 takes for
@@ -187,7 +200,8 @@ module Spree
         #
         # With CAPTURE intent no money moves until this gateway captures, so a
         # PayPal order without a paid capture can be dropped. One whose capture
-        # is COMPLETED or PENDING has been paid, and is refused.
+        # is COMPLETED, PENDING or PARTIALLY_REFUNDED has been paid, and is
+        # refused.
         #
         # A timeout, an outage or rejected credentials is raised as itself, not
         # as a refusal, so the caller can ask again.
@@ -440,7 +454,7 @@ module Spree
           raise Spree::PaymentMethod::WebhookSignatureError, 'Invalid webhook signature' unless result['verification_status'] == 'SUCCESS'
         rescue Spree::PaymentMethod::WebhookSignatureError
           raise
-        rescue Net::OpenTimeout, Net::ReadTimeout, SocketError, JSON::ParserError, Errno::ECONNREFUSED => e
+        rescue *OWN_REQUEST_ERRORS => e
           raise Spree::PaymentMethod::WebhookSignatureError, "Webhook verification failed: #{e.message}"
         end
 
@@ -486,7 +500,7 @@ module Spree
           return nil unless http_success?(response)
 
           JSON.parse(response.body)['client_token']
-        rescue Net::OpenTimeout, Net::ReadTimeout, SocketError, JSON::ParserError, Errno::ECONNREFUSED => e
+        rescue *OWN_REQUEST_ERRORS => e
           Rails.logger.warn("[spree-paypal_merchant] client token generation failed: #{e.message}")
           nil
         end

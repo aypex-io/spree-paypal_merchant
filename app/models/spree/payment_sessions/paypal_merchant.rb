@@ -9,9 +9,10 @@ module Spree
     SETTLED_CAPTURE_STATUSES = %w[COMPLETED DECLINED FAILED].freeze
 
     ##
-    # Capture statuses where the buyer has paid: the funds moved, or are on their way.
+    # Capture statuses where the buyer has paid: the funds moved, or are on
+    # their way. A partly refunded capture was paid first.
     #
-    PAID_CAPTURE_STATUSES = %w[COMPLETED PENDING].freeze
+    PAID_CAPTURE_STATUSES = %w[COMPLETED PENDING PARTIALLY_REFUNDED].freeze
 
     ##
     # The first capture of the first purchase unit of a PayPal order.
@@ -114,7 +115,7 @@ module Spree
     # session stays as it was.
     #
     # @return [Spree::PaymentSessions::PaypalMerchant] self
-    # @raise [Spree::Core::GatewayError] unless the capture is COMPLETED or PENDING
+    # @raise [Spree::Core::GatewayError] unless the capture is in {PAID_CAPTURE_STATUSES}
     #
     def prepare_for_settlement!
       store_paypal_order!(payment_method.fetch_paypal_order(external_id).data.as_json) unless capture_settled?

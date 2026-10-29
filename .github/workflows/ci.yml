@@ -11,11 +11,27 @@ on:
     - cron: "0 6 * * 1"
   workflow_dispatch:
 
+# Keyed by event too, so the weekly or a manual run on main never cancels a
+# push run on main, or the other way round.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
+  # Its own check, so a style offense never fails or hides the required
+  # "Tests" check below.
+  lint:
+    name: RuboCop
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: '4.0'
+          bundler-cache: true
+      - name: Run RuboCop
+        run: bundle exec rubocop
+
   tests:
     # The oldest Spree the gemspec supports and the newest release it allows,
     # each on the oldest supported Ruby and the current one. Gemfile.lock is

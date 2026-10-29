@@ -504,6 +504,18 @@ RSpec.describe Spree::PaymentSessions::PaypalMerchant do
       end
     end
 
+    # The buyer paid; PayPal has since refunded part of it.
+    context 'when the fetched capture is PARTIALLY_REFUNDED' do
+      let(:external_data) { created_data }
+      let(:gateway_order) do
+        double(data: double(as_json: captured_data.tap { |data| data['purchase_units'][0]['payments']['captures'][0]['status'] = 'PARTIALLY_REFUNDED' }))
+      end
+
+      it 'returns the session, so the payment settles' do
+        expect(session.prepare_for_settlement!).to eq(session)
+      end
+    end
+
     context 'when the fetched order has no capture' do
       let(:external_data) { created_data }
       let(:gateway_order) { double(data: double(as_json: created_data)) }

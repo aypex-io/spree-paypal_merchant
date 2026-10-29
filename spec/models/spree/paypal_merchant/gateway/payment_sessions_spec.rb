@@ -65,13 +65,23 @@ RSpec.describe Spree::PaypalMerchant::Gateway::PaymentSessions do
   end
 
   describe '#create_payment_session' do
-    let(:presenter) { instance_double(Spree::PaypalMerchant::OrderPresenter, to_json: { 'body' => 'order request' }) }
-
     before do
-      # The request body is the presenter's concern, covered by its own spec.
-      allow(Spree::PaypalMerchant::OrderPresenter).to receive(:new).and_return(presenter)
+      # The presenter builds the real request; its own spec covers the payload.
+      allow(Spree::PaypalMerchant::OrderPresenter).to receive(:new).and_call_original
       allow(orders_api).to receive(:create_order).and_return(paypal_response(fixture('paypal_order')))
       allow(gateway).to receive(:generate_client_token).and_return('test-client-token')
+    end
+
+    it 'asks PayPal for the whole total, with a breakdown that adds up to it' do
+      gateway.create_payment_session(order: cart)
+
+      expect(orders_api).to have_received(:create_order) do |request|
+        amount = request['body'].purchase_units[0].amount
+        charges = %i[item_total shipping handling tax_total].sum { |field| (amount.breakdown.public_send(field)&.value || 0).to_d }
+        discounts = %i[shipping_discount discount].sum { |field| (amount.breakdown.public_send(field)&.value || 0).to_d }
+
+        expect([amount.value.to_d, charges - discounts]).to eq([cart.total, cart.total])
+      end
     end
 
     it 'persists a payment session' do
@@ -159,10 +169,7 @@ RSpec.describe Spree::PaypalMerchant::Gateway::PaymentSessions do
     context 'when a gift card or store credit covers part of the cart' do
       let(:amount_due) { cart.total - 4 }
 
-      before do
-        allow(Spree::PaypalMerchant::OrderPresenter).to receive(:new).and_call_original
-        allow(cart).to receive(:total_minus_store_credits).and_return(amount_due)
-      end
+      before { allow(cart).to receive(:total_minus_store_credits).and_return(amount_due) }
 
       it 'asks PayPal for only the amount due' do
         gateway.create_payment_session(order: cart)
@@ -829,7 +836,7 @@ RSpec.describe Spree::PaypalMerchant::Gateway::PaymentSessions do
     end
 
     # Money has moved, or is on its way: canceling would hide it.
-    %w[COMPLETED PENDING].each do |capture_status|
+    %w[COMPLETED PENDING PARTIALLY_REFUNDED].each do |capture_status|
       context "when the capture is #{capture_status}" do
         before { allow(orders_api).to receive(:get_order).and_return(paypal_response(captured_order(capture_status))) }
 
@@ -935,6 +942,18 @@ RSpec.describe Spree::PaypalMerchant::Gateway::PaymentSessions do
         expect do
           gateway.parse_webhook_event(raw_body, signed_headers)
         end.to raise_error(Spree::PaymentMethod::WebhookSignatureError, /Invalid webhook signature/)
+      end
+
+      # A transient failure is answered 401, so PayPal sends the event again.
+      [Errno::ECONNRESET, OpenSSL::SSL::SSLError, Net::ProtocolError, EOFError].each do |transport_error|
+        it "raises WebhookSignatureError when the check fails with #{transport_error}" do
+          stub_paypal_http({ 'access_token' => 'tok' })
+          allow(Net::HTTP.new('api-m.sandbox.paypal.com', 443)).to receive(:request).and_raise(transport_error)
+
+          expect do
+            gateway.parse_webhook_event(raw_body, signed_headers)
+          end.to raise_error(Spree::PaymentMethod::WebhookSignatureError, /Webhook verification failed/)
+        end
       end
 
       it 'returns captured when PayPal verifies the signature' do
