@@ -6,8 +6,8 @@ require 'spec_helper'
 # the PayPal client is stubbed. A copy of the gateway is loaded for each call,
 # so the stub is on the SDK client rather than on one gateway.
 RSpec.describe 'PayPal refunds and cancellation through Spree workflows' do
-  def paypal_refund(id: 'REFUND-1')
-    refund = instance_double(PaypalServerSdk::Refund, id: id, as_json: { 'id' => id, 'status' => 'COMPLETED' })
+  def paypal_refund(id: 'REFUND-1', status: 'COMPLETED')
+    refund = instance_double(PaypalServerSdk::Refund, id: id, status: status, as_json: { 'id' => id, 'status' => status })
     instance_double(PaypalServerSdk::ApiResponse, data: refund)
   end
 
@@ -120,6 +120,36 @@ RSpec.describe 'PayPal refunds and cancellation through Spree workflows' do
         result
 
         expect(payments_api).to have_received(:refund_captured_payment).once
+      end
+    end
+
+    # PayPal can accept the request and still say the refund did not happen.
+    context 'when PayPal answers with a refund that failed' do
+      before { allow(payments_api).to receive(:refund_captured_payment).and_return(paypal_refund(status: 'FAILED')) }
+
+      it 'fails, saying PayPal did not issue the refund' do
+        expect(result).to be_failure
+        expect(result.error.to_s).to eq('PayPal did not issue the refund (status FAILED).')
+      end
+
+      it 'does not record a refund' do
+        result
+
+        expect(refunds.count).to eq(0)
+      end
+
+      it 'leaves the whole payment refundable' do
+        result
+
+        expect(payment.reload.credit_allowed).to eq(total)
+      end
+    end
+
+    context 'when PayPal answers with a refund that is pending' do
+      before { allow(payments_api).to receive(:refund_captured_payment).and_return(paypal_refund(status: 'PENDING')) }
+
+      it 'records the refund' do
+        expect(result.value).to have_attributes(transaction_id: 'REFUND-1', amount: 12.5)
       end
     end
 
@@ -239,7 +269,7 @@ RSpec.describe 'PayPal refunds and cancellation through Spree workflows' do
   end
 
   describe 'voiding a payment' do
-    let(:status) { 'pending' }
+    let(:status) { 'completed' }
     let(:result) { Spree.payment_void_workflow.call(payment: payment) }
 
     it 'fails, telling the merchant to refund instead' do
@@ -256,7 +286,23 @@ RSpec.describe 'PayPal refunds and cancellation through Spree workflows' do
     it 'leaves the payment as it was' do
       result
 
-      expect(payment.reload).to be_pending
+      expect(payment.reload).to be_completed
+    end
+
+    # PayPal may still complete it, so it is not voided in Spree.
+    context 'when PayPal is still processing the payment' do
+      let(:status) { 'pending' }
+
+      it 'fails, telling the merchant to refund it once PayPal completes it' do
+        expect(result).to be_failure
+        expect(result.error.to_s).to eq('PayPal is still processing this payment; refund it once PayPal completes it.')
+      end
+
+      it 'leaves the payment pending' do
+        result
+
+        expect(payment.reload).to be_pending
+      end
     end
   end
 
@@ -278,6 +324,126 @@ RSpec.describe 'PayPal refunds and cancellation through Spree workflows' do
       result
 
       expect(payment.reload.response_code).to eq('ORDER-1')
+    end
+  end
+end
+
+# A PayPal capture can be PENDING for a while. The payment is not voided in
+# Spree while PayPal may still collect it: when PayPal completes it, the money
+# is held against a payment that can be refunded.
+RSpec.describe 'PayPal payment that PayPal is still processing' do
+  def fixture(name)
+    JSON.parse(File.read(Spree::PaypalMerchant::Engine.root.join("spec/fixtures/#{name}.json")))
+  end
+
+  def paypal_response(data)
+    order = instance_double(PaypalServerSdk::Order, id: data['id'], status: data['status'], as_json: data)
+    instance_double(PaypalServerSdk::ApiResponse, data: order)
+  end
+
+  def captured_order(capture_status)
+    fixture('captured_paypal_order').tap do |data|
+      data['purchase_units'][0]['payments']['captures'][0]['status'] = capture_status
+    end
+  end
+
+  # A capture event is about the capture, and names its order.
+  def deliver_webhook(event_type)
+    body = {
+      id: 'WH-EVENT-1', event_type: event_type,
+      resource: { 'id' => capture_id, 'supplementary_data' => { 'related_ids' => { 'order_id' => payment_session.external_id } } }
+    }.to_json
+    result = gateway.parse_webhook_event(body, {})
+
+    Spree::Payments::HandleWebhookJob.perform_now(
+      payment_method_id: gateway.id, action: result[:action].to_s, payment_session_id: result[:payment_session].id
+    )
+  end
+
+  # Read from the database: the cart and the order can hold loaded payments.
+  def payment
+    Spree::Payment.where(response_code: payment_session.external_id).sole
+  end
+
+  def cancel_order
+    Spree.order_cancel_workflow.call(order: placed_order, refund_payments: true)
+  end
+
+  let(:cart) { create(:cart_ready_for_delivery) }
+  let(:gateway) { create(:paypal_merchant_gateway, store: cart.store) }
+  let(:orders_api) { instance_double(PaypalServerSdk::OrdersController) }
+  let(:payments_api) { instance_double(PaypalServerSdk::PaymentsController, refund_captured_payment: paypal_refund) }
+  let(:paypal_refund) do
+    refund = instance_double(PaypalServerSdk::Refund, id: 'REFUND-1', status: 'COMPLETED', as_json: { 'id' => 'REFUND-1' })
+    instance_double(PaypalServerSdk::ApiResponse, data: refund)
+  end
+  let(:captured) { captured_order('COMPLETED') }
+  let(:capture_id) { captured['purchase_units'][0]['payments']['captures'][0]['id'] }
+  let(:payment_session) do
+    create(:paypal_merchant_payment_session, cart: cart, payment_method: gateway, amount: cart.total, external_id: captured['id'],
+                                             external_data: fixture('paypal_order').merge('id' => captured['id']))
+  end
+  let(:placed_order) { cart.reload.order }
+  let(:still_processing) { 'PayPal is still processing this payment; refund it once PayPal completes it.' }
+
+  before do
+    allow(PaypalServerSdk::Client).to receive(:new).and_return(instance_double(PaypalServerSdk::Client, orders: orders_api, payments: payments_api))
+    allow(orders_api).to receive(:get_order).and_return(paypal_response(captured_order('PENDING')))
+    deliver_webhook('PAYMENT.CAPTURE.PENDING')
+  end
+
+  it 'starts as a pending payment on a placed order' do
+    expect(payment).to be_pending
+    expect(placed_order).to be_present
+  end
+
+  describe 'canceling the order meanwhile' do
+    it 'raises, saying PayPal is still processing the payment and to refund it once it completes' do
+      expect { cancel_order }.to raise_error(Spree::Core::GatewayError, still_processing)
+    end
+
+    it 'leaves the payment pending, not voided' do
+      expect { cancel_order }.to raise_error(Spree::Core::GatewayError)
+
+      expect(payment).to be_pending
+    end
+
+    it 'does not call PayPal' do
+      expect { cancel_order }.to raise_error(Spree::Core::GatewayError)
+
+      expect(payments_api).not_to have_received(:refund_captured_payment)
+    end
+  end
+
+  describe 'when PayPal then completes the capture' do
+    let!(:order_id) { placed_order.id }
+    let!(:placed_at) { placed_order.completed_at }
+
+    before do
+      expect { cancel_order }.to raise_error(Spree::Core::GatewayError)
+      allow(orders_api).to receive(:get_order).and_return(paypal_response(captured))
+      deliver_webhook('PAYMENT.CAPTURE.COMPLETED')
+    end
+
+    it 'completes the payment' do
+      expect(payment).to be_completed
+    end
+
+    it 'does not place the order again' do
+      expect(cart.reload.order).to have_attributes(id: order_id, completed_at: placed_at)
+      expect(Spree::Order.where(number: placed_order.number).count).to eq(1)
+    end
+
+    it 'leaves the payment refundable' do
+      expect(payment.credit_allowed).to be_positive
+    end
+
+    it 'refunds it through the refund workflow, against the capture' do
+      result = Spree.refund_create_workflow.call(payment: payment, amount: 10)
+
+      expect(result).to be_success
+      expect(payments_api).to have_received(:refund_captured_payment).with(hash_including('capture_id' => capture_id))
+      expect(Spree::Refund.where(payment_id: payment.id).sole).to have_attributes(transaction_id: 'REFUND-1')
     end
   end
 end

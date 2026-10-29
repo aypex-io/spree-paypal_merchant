@@ -317,12 +317,66 @@ RSpec.describe Spree::PaypalMerchant::Gateway do
       expect { payment.gateway_error(gateway.void('ORDER-1', nil)) }
         .to raise_error(Spree::Core::GatewayError, 'PayPal payments are captured at checkout; refund the payment instead.')
     end
+
+    # A payment PayPal has not finished is never voided in Spree, which would
+    # leave the money captured when PayPal completes it. Spree hands the gateway
+    # the payment's prefixed id, so the message can tell the two apart.
+    context 'when the payment is one of the gateway\'s own' do
+      let(:order) { create(:completed_order_with_totals, store: store) }
+      let(:payment_source) { Spree::PaypalMerchant::PaymentSources::Paypal.create!(payment_method: gateway, account_id: 'PAYPAL-ACCOUNT-123') }
+      let(:status) { 'pending' }
+      let(:payment) do
+        create(:payment, order: order, payment_method: gateway, source: payment_source, amount: order.total, status: status, response_code: 'ORDER-1')
+      end
+      let(:options) { payment.gateway_options }
+      let(:still_processing) { 'PayPal is still processing this payment; refund it once PayPal completes it.' }
+      let(:captured) { 'PayPal payments are captured at checkout; refund the payment instead.' }
+
+      %w[pending processing].each do |unfinished|
+        context "when it is #{unfinished}" do
+          let(:status) { unfinished }
+
+          it 'says PayPal is still processing it, and to refund it once it completes' do
+            expect(gateway.void('ORDER-1', payment_source, options).message).to eq(still_processing)
+          end
+
+          it 'is still not a success' do
+            expect(gateway.void('ORDER-1', payment_source, options)).not_to be_success
+          end
+        end
+      end
+
+      context 'when it is completed' do
+        let(:status) { 'completed' }
+
+        it 'says to refund it instead' do
+          expect(gateway.void('ORDER-1', payment_source, options).message).to eq(captured)
+        end
+      end
+
+      context 'when the id belongs to another payment method' do
+        let(:other_payment) do
+          create(:payment, order: create(:completed_order_with_totals, store: store), payment_method: create(:check_payment_method, store: store),
+                           source: nil, amount: 10, status: 'pending')
+        end
+
+        it 'says to refund it instead' do
+          expect(gateway.void('ORDER-1', payment_source, { payment_prefixed_id: other_payment.prefixed_id }).message).to eq(captured)
+        end
+      end
+
+      it 'says to refund it instead when the id is not a payment' do
+        expect(gateway.void('ORDER-1', payment_source, { payment_prefixed_id: 'pay_nonexistent' }).message).to eq(captured)
+      end
+    end
   end
 
   describe '#credit' do
     let(:payments_api) { instance_double(PaypalServerSdk::PaymentsController, refund_captured_payment: paypal_refund) }
+    let(:refund_status) { 'COMPLETED' }
     let(:paypal_refund) do
-      refund_data = instance_double(PaypalServerSdk::Refund, id: 'REFUND-456', as_json: { 'id' => 'REFUND-456', 'status' => 'COMPLETED' })
+      refund_data = instance_double(PaypalServerSdk::Refund, id: 'REFUND-456', status: refund_status,
+                                                             as_json: { 'id' => 'REFUND-456', 'status' => refund_status })
       instance_double(PaypalServerSdk::ApiResponse, data: refund_data)
     end
     let(:metadata) { { 'paypal_capture_id' => 'CAP-1' } }
@@ -391,6 +445,40 @@ RSpec.describe Spree::PaypalMerchant::Gateway do
         gateway.credit(money, nil, 'ORDER-1', options)
 
         expect(payments_api).to have_received(:refund_captured_payment).with(refund_of('CAP-1', '1000', 'JPY'))
+      end
+    end
+
+    # PayPal can accept the request and still report that the refund did not happen.
+    %w[FAILED CANCELLED].each do |status|
+      context "when PayPal answers with a #{status} refund" do
+        let(:refund_status) { status }
+
+        it 'fails' do
+          expect(gateway.credit(money, nil, 'ORDER-1', options)).not_to be_success
+        end
+
+        it 'says PayPal did not issue the refund, with its status' do
+          expect(gateway.credit(money, nil, 'ORDER-1', options).message).to eq("PayPal did not issue the refund (status #{status}).")
+        end
+
+        it 'has no authorization, so no refund id is recorded' do
+          expect(gateway.credit(money, nil, 'ORDER-1', options).authorization).to be_nil
+        end
+
+        it 'does not tell the merchant to check PayPal' do
+          expect(gateway.credit(money, nil, 'ORDER-1', options).message).not_to match(/did not confirm/i)
+        end
+      end
+    end
+
+    # A pending refund is on its way to the buyer, so Spree records it.
+    %w[PENDING COMPLETED].each do |status|
+      context "when PayPal answers with a #{status} refund" do
+        let(:refund_status) { status }
+
+        it 'succeeds with the PayPal refund id' do
+          expect(gateway.credit(money, nil, 'ORDER-1', options)).to be_success.and have_attributes(authorization: 'REFUND-456')
+        end
       end
     end
 
