@@ -42,9 +42,11 @@ module Spree
 
       include PaymentSessions
 
-      GatewayResponse = Struct.new(:success, :message, :params, :authorization) do
-        alias_method :success?, :success
-      end
+      ##
+      # Refunds arrive as a Spree::Money rather than hundredths, which is wrong
+      # for a currency without two decimals and goes in Spree 6.1.
+      #
+      self.accepts_money_amounts = true
 
       preference :client_id, :string
       preference :client_secret, :password
@@ -175,83 +177,79 @@ module Spree
       end
 
       ##
-      # Void a PayPal authorization.
+      # PayPal payments are captured at checkout, so there is never an
+      # authorization to void: a payment that holds money is refunded instead.
       #
-      # @param authorization [String]
+      # @param _response_code [String]
       # @param _source [Object]
-      # @param gateway_options [Hash]
-      # @return [GatewayResponse]
+      # @param _options [Hash]
+      # @return [Spree::PaymentResponse] always a failure
       #
-      def void(authorization, _source, _gateway_options = {})
-        protect_from_error do
-          response = client.payments.void_payment({
-                                                    'authorization_id' => authorization,
-                                                    'prefer' => 'return=representation'
-                                                  })
-
-          success(authorization, response.data.as_json)
-        end
+      def void(_response_code, _source = nil, _options = {})
+        failure('PayPal payments are captured at checkout; refund the payment instead.')
       end
 
       ##
       # Refund a captured PayPal payment.
       #
-      # @param amount_in_cents [Integer]
-      # @param _payment_source [Object]
-      # @param paypal_payment_id [String]
-      # @param gateway_options [Hash]
-      # @return [GatewayResponse]
+      # A refusal fails with PayPal's reason. A refund PayPal never confirmed,
+      # because it answered with a server error or the request timed out,
+      # fails with a message to check PayPal first: PayPal may have issued it,
+      # and issuing it again would pay the buyer twice. The refund request is
+      # sent once; the SDK never resends a POST.
       #
-      def credit(amount_in_cents, _payment_source, paypal_payment_id, gateway_options = {})
-        refund_originator = gateway_options[:originator]
-        order = refund_originator.respond_to?(:order) ? refund_originator.order : refund_originator
+      # It returns a failure rather than raising. Spree::Refund raises a
+      # GatewayError with the failure's message, which the refund workflow
+      # reports and uses to discard the unrecorded refund; a
+      # Spree::PaymentConnectionError would be replaced by a generic message.
+      #
+      # @param money [Spree::Money] the amount to refund
+      # @param _source [Object]
+      # @param response_code [String] the PayPal capture id, for a payment
+      #   taken on 5.x; otherwise the capture id is on the payment's metadata
+      # @param options [Hash] +:originator+ is the Spree::Refund
+      # @return [Spree::PaymentResponse]
+      #
+      def credit(money, _source, response_code, options = {})
+        response = client.payments.refund_captured_payment(
+          'capture_id' => capture_id_for(response_code, options[:originator]),
+          'amount' => {
+            'value' => Spree::Money::Rounding.format(money.to_d, money.currency),
+            'currency_code' => money.currency.iso_code
+          }
+        )
 
-        return failure('Order not found') unless order
-
-        protect_from_error do
-          payload = {
-            capture_id: paypal_payment_id,
-            amount: {
-              value: (amount_in_cents / 100.0).to_s,
-              currency_code: order.currency.upcase
-            }
-          }.deep_stringify_keys
-
-          response = client.payments.refund_captured_payment(payload)
-
-          success(response.data.id, response.data.as_json)
+        success(response.data.id, response.data.as_json)
+      rescue PaypalServerSdk::APIException => e
+        if paypal_refusal?(e)
+          failure("PayPal declined the refund: #{paypal_error_text(e)}")
+        else
+          unconfirmed_refund("PayPal answered #{e.response_code}")
         end
+      rescue *CONNECTION_ERRORS
+        unconfirmed_refund('the connection to PayPal failed or timed out')
       end
 
       ##
-      # Cancel a payment: refund if captured, otherwise void.
+      # Settle a payment for a canceled order: refund it if PayPal took the
+      # money, unless told to keep it.
       #
-      # @param authorization [String]
+      # The refund goes through Spree's refund workflow, which records it and
+      # calls {#credit}. The payment has nothing to void at PayPal, and the
+      # response carries no authorization, so Spree keeps the payment's
+      # response code, the PayPal order id.
+      #
+      # @param _response_code [String]
       # @param payment [Spree::Payment, NilClass]
-      # @return [GatewayResponse]
+      # @param refund [TrueClass, FalseClass] whether captured money may be
+      #   returned
+      # @return [Spree::PaymentResponse]
+      # @raise [Spree::Core::GatewayError] when the refund fails
       #
-      def cancel(authorization, payment = nil)
-        protect_from_error do
-          if payment&.completed?
-            amount = payment.credit_allowed
-            return success(authorization, {}) if amount.zero?
+      def cancel(_response_code, payment = nil, refund: true)
+        refund_in_full(payment) if refund && payment&.completed? && !payment.credit_allowed.zero?
 
-            refund = payment.refunds.create!(
-              amount: amount,
-              reason: Spree::RefundReason.order_canceled_reason,
-              refunder_id: payment.order.canceler_id
-            )
-
-            success(payment.response_code, refund.response.params)
-          else
-            response = client.payments.void_payment({
-                                                      'authorization_id' => authorization,
-                                                      'prefer' => 'return=representation'
-                                                    })
-
-            success(authorization, response.data.as_json)
-          end
-        end
+        success(nil, {})
       end
 
       protected
@@ -262,6 +260,8 @@ module Spree
 
       private
 
+      # Turns a PayPal failure into the GatewayError Spree reports to the buyer.
+      # Used by session creation; refunds report failures as responses instead.
       def protect_from_error
         yield
       rescue PaypalServerSdk::APIException => e
@@ -270,12 +270,40 @@ module Spree
         raise Spree::Core::GatewayError, "PayPal connection error: #{e.message}"
       end
 
+      def refund_in_full(payment)
+        result = Spree.refund_create_workflow.call(
+          payment: payment,
+          reason: Spree::RefundReason.order_canceled_reason(payment.owner.store),
+          refunder: payment.order&.canceler
+        )
+
+        raise Spree::Core::GatewayError, result.error.to_s if result.failure?
+      end
+
+      # The capture to refund: recorded on the payment at settlement, or for a
+      # payment taken on 5.x, the response code.
+      def capture_id_for(response_code, refund)
+        recorded = refund.respond_to?(:payment) ? refund.payment&.metadata&.dig('paypal_capture_id') : nil
+        recorded.presence || response_code
+      end
+
+      def paypal_error_text(error)
+        details = error.respond_to?(:details) && error.details.is_a?(Array) ? error.details.filter_map { |detail| detail.try(:description) } : []
+
+        [error.message, *details].map(&:to_s).compact_blank.uniq.join(' ')
+      end
+
+      def unconfirmed_refund(reason)
+        failure("PayPal did not confirm the refund (#{reason}), so it may still have been issued. " \
+                'Check the payment in PayPal before retrying.')
+      end
+
       def success(authorization, response)
-        GatewayResponse.new(true, 'Transaction successful', response, authorization)
+        Spree::PaymentResponse.new(true, 'Transaction successful', response, authorization: authorization)
       end
 
       def failure(message, response = {})
-        GatewayResponse.new(false, message, response, nil)
+        Spree::PaymentResponse.new(false, message, response)
       end
     end
   end

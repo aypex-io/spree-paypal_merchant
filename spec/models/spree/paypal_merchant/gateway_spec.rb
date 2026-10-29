@@ -185,8 +185,83 @@ RSpec.describe Spree::PaypalMerchant::Gateway do
     end
     let(:payment) { create(:payment, order: order, payment_method: gateway, source: payment_source, amount: order.total) }
 
+    # Read from the database: the payment method's association can be loaded.
+    def gateway_customers
+      Spree::GatewayCustomer.where(payment_method_id: gateway.id)
+    end
+
     it 'creates a gateway customer record' do
-      expect { gateway.create_profile(payment) }.to change(Spree::GatewayCustomer, :count).by(1)
+      expect { gateway.create_profile(payment) }.to change { gateway_customers.count }.by(1)
+    end
+
+    it 'links the profile to the buyer as a customer' do
+      gateway.create_profile(payment)
+
+      expect(gateway_customers.sole).to have_attributes(customer_id: order.customer_id, profile_id: 'PAYPAL-ACCOUNT-123')
+    end
+
+    it 'returns the gateway customer' do
+      expect(gateway.create_profile(payment)).to be_a(Spree::GatewayCustomer).and be_persisted
+    end
+
+    it 'keeps one profile when asked again for the same account' do
+      gateway.create_profile(payment)
+
+      expect { gateway.create_profile(payment) }.not_to(change { gateway_customers.count })
+    end
+
+    # A customer holds one profile per payment method, so a second PayPal
+    # account is not stored; it must not raise at settlement.
+    it 'keeps the first profile when the customer pays from another PayPal account' do
+      gateway.create_profile(payment)
+      other_source = Spree::PaypalMerchant::PaymentSources::Paypal.create!(
+        payment_method: gateway, account_id: 'PAYPAL-ACCOUNT-456', gateway_payment_profile_id: 'PROFILE-2'
+      )
+      other_payment = create(:payment, order: order, payment_method: gateway, source: other_source, amount: order.total)
+
+      expect { gateway.create_profile(other_payment) }.not_to raise_error
+      expect(gateway_customers.pluck(:profile_id)).to eq(['PAYPAL-ACCOUNT-123'])
+    end
+
+    context 'when the payment belongs to a cart' do
+      let(:cart) { create(:cart_with_line_items, customer: user, store: store) }
+      let(:payment) { create(:payment, cart: cart, order: nil, payment_method: gateway, source: payment_source, amount: cart.total) }
+
+      it 'creates a gateway customer for the cart customer' do
+        gateway.create_profile(payment)
+
+        expect(gateway_customers.sole).to have_attributes(customer_id: user.id)
+      end
+    end
+
+    # A guest checkout has an owner with no customer: nothing to link, nothing to raise.
+    context 'when the buyer is a guest' do
+      let(:order) { create(:order_with_line_items, customer: nil, store: store) }
+
+      it 'creates no gateway customer' do
+        expect { gateway.create_profile(payment) }.not_to(change { gateway_customers.count })
+      end
+
+      it 'returns nil without an error' do
+        expect(gateway.create_profile(payment)).to be_nil
+      end
+    end
+
+    context 'when a guest pays from a cart' do
+      let(:cart) { create(:cart_with_line_items, customer: nil, store: store) }
+      let(:payment) { create(:payment, cart: cart, order: nil, payment_method: gateway, source: payment_source, amount: cart.total) }
+
+      it 'creates no gateway customer' do
+        expect { gateway.create_profile(payment) }.not_to(change { gateway_customers.count })
+      end
+    end
+
+    context 'when the source has no PayPal account id' do
+      let(:payment_source) { Spree::PaypalMerchant::PaymentSources::Paypal.create!(payment_method: gateway) }
+
+      it 'creates no gateway customer' do
+        expect { gateway.create_profile(payment) }.not_to(change { gateway_customers.count })
+      end
     end
 
     context 'when the source is Apple Pay' do
@@ -198,103 +273,311 @@ RSpec.describe Spree::PaypalMerchant::Gateway do
     end
   end
 
+  describe 'money amounts' do
+    it 'accepts Spree::Money amounts' do
+      expect(described_class.accepts_money_amounts).to be true
+    end
+
+    # Without it Spree 6 hands the gateway hundredths, and warns that they go in 6.1.
+    it 'gives the gateway a Spree::Money for a refund, not hundredths' do
+      expect(gateway.gateway_amount(12.5, 'GBP')).to be_a(Spree::Money).and have_attributes(currency: Spree::Money.new(1, currency: 'GBP').currency)
+    end
+
+    it 'does not warn about hundredths' do
+      expect { gateway.gateway_amount(12.5, 'GBP') }.not_to output(/hundredths/).to_stderr
+    end
+  end
+
   describe '#void' do
-    let(:authorization) { 'AUTH-123' }
-    let(:response_data) { double(as_json: { 'id' => authorization }) }
-    let(:response) { double(data: response_data) }
+    let(:payments_api) { instance_double(PaypalServerSdk::PaymentsController) }
 
-    before do
-      payments_api = double
-      allow(gateway).to receive(:client).and_return(double(payments: payments_api))
-      allow(payments_api).to receive(:void_payment).with(
-        { 'authorization_id' => authorization, 'prefer' => 'return=representation' }
-      ).and_return(response)
+    before { allow(gateway).to receive(:client).and_return(instance_double(PaypalServerSdk::Client, payments: payments_api)) }
+
+    it 'is not a success' do
+      expect(gateway.void('ORDER-1', nil)).not_to be_success
     end
 
-    it 'returns a successful billing response' do
-      expect(gateway.void(authorization, nil).success?).to be true
+    it 'tells the merchant to refund instead' do
+      expect(gateway.void('ORDER-1', nil).message).to eq('PayPal payments are captured at checkout; refund the payment instead.')
     end
 
-    context 'when PayPal API raises an error' do
-      before do
-        payments_api = double
-        allow(gateway).to receive(:client).and_return(double(payments: payments_api))
-        allow(payments_api).to receive(:void_payment).and_raise(
-          PaypalServerSdk::APIException.new('Void failed', double(status_code: 422))
-        )
-      end
+    it 'takes the arguments Spree passes it' do
+      expect(gateway.void('ORDER-1', double, { order_id: 'R1' })).not_to be_success
+    end
 
-      it 'raises a GatewayError' do
-        expect { gateway.void(authorization, nil) }.to raise_error(Spree::Core::GatewayError, /PayPal API error/)
-      end
+    it 'does not call PayPal' do
+      gateway.void('ORDER-1', nil)
+
+      expect(gateway).not_to have_received(:client)
+    end
+
+    it 'reads as the failure message when Spree reports it' do
+      payment = build_stubbed(:payment)
+
+      expect { payment.gateway_error(gateway.void('ORDER-1', nil)) }
+        .to raise_error(Spree::Core::GatewayError, 'PayPal payments are captured at checkout; refund the payment instead.')
     end
   end
 
   describe '#credit' do
-    let(:order) { create(:order, store: store, currency: 'USD') }
-    let(:refund) { double(order: order) }
-    let(:gateway_options) { { originator: refund } }
-    let(:capture_id) { 'CAPTURE-123' }
-    let(:refund_id) { 'REFUND-456' }
-    let(:response_data) { double(id: refund_id, as_json: { 'id' => refund_id }) }
-    let(:response) { double(data: response_data) }
+    let(:payments_api) { instance_double(PaypalServerSdk::PaymentsController, refund_captured_payment: paypal_refund) }
+    let(:paypal_refund) do
+      refund_data = instance_double(PaypalServerSdk::Refund, id: 'REFUND-456', as_json: { 'id' => 'REFUND-456', 'status' => 'COMPLETED' })
+      instance_double(PaypalServerSdk::ApiResponse, data: refund_data)
+    end
+    let(:metadata) { { 'paypal_capture_id' => 'CAP-1' } }
+    let(:payment) { instance_double(Spree::Payment, metadata: metadata) }
+    let(:refund) { instance_double(Spree::Refund, payment: payment) }
+    let(:options) { { originator: refund } }
+    let(:money) { Spree::Money.new(75, currency: 'USD') }
 
-    before do
-      payments_api = double
-      allow(gateway).to receive(:client).and_return(double(payments: payments_api))
-      allow(payments_api).to receive(:refund_captured_payment).with(
-        {
-          'capture_id' => capture_id,
-          'amount' => { 'value' => '10.0', 'currency_code' => 'USD' }
-        }
-      ).and_return(response)
+    before { allow(gateway).to receive(:client).and_return(instance_double(PaypalServerSdk::Client, payments: payments_api)) }
+
+    # The request PayPal's refund endpoint is sent.
+    def refund_of(capture_id, value, currency)
+      { 'capture_id' => capture_id, 'amount' => { 'value' => value, 'currency_code' => currency } }
     end
 
-    it 'returns a successful billing response with the refund ID' do
-      expect(gateway.credit(1000, nil, capture_id, gateway_options).authorization).to eq(refund_id)
+    it 'refunds the capture recorded on the payment, to the currency decimals' do
+      gateway.credit(money, nil, 'ORDER-1', options)
+
+      expect(payments_api).to have_received(:refund_captured_payment).once.with(refund_of('CAP-1', '75.00', 'USD'))
     end
 
-    context 'when the originator does not respond to order' do
-      let(:gateway_options) { { originator: order } }
+    it 'succeeds with the PayPal refund id as the authorization' do
+      response = gateway.credit(money, nil, 'ORDER-1', options)
 
-      it 'uses the originator as the order' do
-        expect(gateway.credit(1000, nil, capture_id, gateway_options).success?).to be true
+      expect(response).to be_success.and have_attributes(authorization: 'REFUND-456')
+    end
+
+    it 'returns a Spree payment response' do
+      expect(gateway.credit(money, nil, 'ORDER-1', options)).to be_a(Spree::PaymentResponse)
+    end
+
+    context 'when the payment has no capture id (taken on 5.x)' do
+      let(:metadata) { {} }
+
+      it 'refunds the capture named by the response code' do
+        gateway.credit(money, nil, 'CAPTURE-FROM-5X', options)
+
+        expect(payments_api).to have_received(:refund_captured_payment).with(refund_of('CAPTURE-FROM-5X', '75.00', 'USD'))
       end
     end
 
-    context 'when the order is not found' do
-      let(:gateway_options) { { originator: nil } }
+    context 'when there is no originator' do
+      let(:options) { {} }
 
-      it 'returns a failure response' do
-        expect(gateway.credit(1000, nil, capture_id, gateway_options).message).to eq('Order not found')
+      it 'refunds the capture named by the response code' do
+        gateway.credit(money, nil, 'CAPTURE-FROM-5X', options)
+
+        expect(payments_api).to have_received(:refund_captured_payment).with(refund_of('CAPTURE-FROM-5X', '75.00', 'USD'))
       end
+    end
+
+    context 'with a partial refund in pounds' do
+      let(:money) { Spree::Money.new(12.5, currency: 'GBP') }
+
+      it 'sends two decimals' do
+        gateway.credit(money, nil, 'ORDER-1', options)
+
+        expect(payments_api).to have_received(:refund_captured_payment).with(refund_of('CAP-1', '12.50', 'GBP'))
+      end
+    end
+
+    context 'with a currency that has no decimals' do
+      let(:money) { Spree::Money.new(1000, currency: 'JPY') }
+
+      it 'sends a whole number' do
+        gateway.credit(money, nil, 'ORDER-1', options)
+
+        expect(payments_api).to have_received(:refund_captured_payment).with(refund_of('CAP-1', '1000', 'JPY'))
+      end
+    end
+
+    def paypal_error(status, message: 'The refund could not be made')
+      PaypalServerSdk::ErrorException.new(message, double(status_code: status, raw_body: { name: 'UNPROCESSABLE_ENTITY', message: message }.to_json))
+    end
+
+    # PayPal looked at the request and said no, so the money did not move.
+    context 'when PayPal refuses the refund' do
+      before { allow(payments_api).to receive(:refund_captured_payment).and_raise(paypal_error(422, message: 'The capture is fully refunded')) }
+
+      it 'fails' do
+        expect(gateway.credit(money, nil, 'ORDER-1', options)).not_to be_success
+      end
+
+      it "fails with PayPal's message" do
+        expect(gateway.credit(money, nil, 'ORDER-1', options).message).to include('The capture is fully refunded')
+      end
+
+      it 'does not tell the merchant to check PayPal' do
+        expect(gateway.credit(money, nil, 'ORDER-1', options).message).not_to match(/did not confirm/i)
+      end
+
+      it 'returns the failure rather than raising' do
+        expect { gateway.credit(money, nil, 'ORDER-1', options) }.not_to raise_error
+      end
+    end
+
+    # Not knowing whether PayPal acted is the one way an admin retry can
+    # refund twice, so the message says to check PayPal first.
+    shared_examples 'a refund PayPal did not confirm' do
+      it 'fails' do
+        expect(gateway.credit(money, nil, 'ORDER-1', options)).not_to be_success
+      end
+
+      it 'says PayPal did not confirm the refund' do
+        expect(gateway.credit(money, nil, 'ORDER-1', options).message).to match(/PayPal did not confirm the refund/)
+      end
+
+      it 'tells the merchant to check PayPal before retrying' do
+        expect(gateway.credit(money, nil, 'ORDER-1', options).message).to match(/check .*PayPal before (retrying|trying again)/i)
+      end
+
+      it 'returns the failure rather than raising' do
+        expect { gateway.credit(money, nil, 'ORDER-1', options) }.not_to raise_error
+      end
+
+      it 'asks PayPal once' do
+        gateway.credit(money, nil, 'ORDER-1', options)
+
+        expect(payments_api).to have_received(:refund_captured_payment).once
+      end
+    end
+
+    [500, 503, 401, 408, 429].each do |status|
+      context "when PayPal answers #{status}" do
+        before { allow(payments_api).to receive(:refund_captured_payment).and_raise(paypal_error(status)) }
+
+        it_behaves_like 'a refund PayPal did not confirm'
+      end
+    end
+
+    Spree::PaypalMerchant::Gateway::CONNECTION_ERRORS.each do |error_class|
+      context "when the request fails with #{error_class}" do
+        before { allow(payments_api).to receive(:refund_captured_payment).and_raise(error_class) }
+
+        it_behaves_like 'a refund PayPal did not confirm'
+      end
+    end
+
+    # Spree::Refund turns a failed response into the error it shows the admin.
+    it "is reported to the admin as the refund's error" do
+      allow(payments_api).to receive(:refund_captured_payment).and_raise(paypal_error(503))
+      response = gateway.credit(money, nil, 'ORDER-1', options)
+
+      expect(response.params['message'] || response.message).to match(/PayPal did not confirm the refund/)
     end
   end
 
   describe '#cancel' do
-    let(:authorization) { 'AUTH-123' }
+    let(:payments_api) { instance_double(PaypalServerSdk::PaymentsController) }
+    let(:canceler) { create(:admin_user) }
+    let(:order) { create(:completed_order_with_totals, store: store) }
+    let(:status) { 'completed' }
+    let(:payment_source) { Spree::PaypalMerchant::PaymentSources::Paypal.create!(payment_method: gateway, account_id: 'PAYPAL-ACCOUNT-123') }
+    let(:payment) do
+      create(:payment, order: order, payment_method: gateway, source: payment_source, amount: order.total, status: status,
+                       response_code: 'ORDER-1', metadata: { 'paypal_capture_id' => 'CAP-1' })
+    end
+    let(:refund) { instance_double(Spree::Refund) }
+    let(:workflow_result) { Spree::ServiceModule::Result.new(true, refund, nil) }
 
-    context 'when the payment is completed and credit_allowed is zero' do
-      let(:payment) { double(completed?: true, credit_allowed: 0) }
+    before do
+      allow(gateway).to receive(:client).and_return(instance_double(PaypalServerSdk::Client, payments: payments_api))
+      allow(Spree.refund_create_workflow).to receive(:call).and_return(workflow_result)
+      order.update!(canceler: canceler)
+    end
 
-      it 'returns success without creating a refund' do
-        expect(gateway.cancel(authorization, payment).authorization).to eq(authorization)
+    context 'when the payment is completed' do
+      it 'refunds it through the refund workflow, for the canceled reason, by whoever canceled' do
+        gateway.cancel(payment.response_code, payment)
+
+        expect(Spree.refund_create_workflow).to have_received(:call).with(
+          payment: payment, reason: Spree::RefundReason.order_canceled_reason(store), refunder: canceler
+        )
+      end
+
+      it 'succeeds' do
+        expect(gateway.cancel(payment.response_code, payment)).to be_success
+      end
+
+      # handle_response copies a non-nil authorization into the payment's
+      # response_code, which here is the PayPal order id that links the session.
+      it 'returns no authorization' do
+        expect(gateway.cancel(payment.response_code, payment).authorization).to be_nil
+      end
+
+      it 'returns a Spree payment response' do
+        expect(gateway.cancel(payment.response_code, payment)).to be_a(Spree::PaymentResponse)
+      end
+
+      it 'does not call PayPal directly' do
+        gateway.cancel(payment.response_code, payment)
+
+        expect(gateway).not_to have_received(:client)
       end
     end
 
-    context 'when the payment is not completed' do
-      let(:payment) { double(completed?: false) }
-      let(:response_data) { double(as_json: { 'id' => authorization }) }
-      let(:response) { double(data: response_data) }
+    context 'when the refund workflow fails' do
+      let(:workflow_result) { Spree::ServiceModule::Result.new(false, refund, Spree::ServiceModule::ResultError.new('PayPal declined the refund: nope')) }
 
-      before do
-        payments_api = double
-        allow(gateway).to receive(:client).and_return(double(payments: payments_api))
-        allow(payments_api).to receive(:void_payment).and_return(response)
+      it 'raises a GatewayError with the workflow error' do
+        expect { gateway.cancel(payment.response_code, payment) }.to raise_error(Spree::Core::GatewayError, 'PayPal declined the refund: nope')
+      end
+    end
+
+    context 'when asked not to refund' do
+      it 'does not refund' do
+        gateway.cancel(payment.response_code, payment, refund: false)
+
+        expect(Spree.refund_create_workflow).not_to have_received(:call)
       end
 
-      it 'voids the payment via PayPal' do
-        expect(gateway.cancel(authorization, payment).success?).to be true
+      it 'succeeds with no authorization' do
+        expect(gateway.cancel(payment.response_code, payment, refund: false)).to be_success.and have_attributes(authorization: nil)
+      end
+    end
+
+    context 'when nothing is left to refund' do
+      before { allow(payment).to receive(:credit_allowed).and_return(0) }
+
+      it 'does not refund' do
+        gateway.cancel(payment.response_code, payment)
+
+        expect(Spree.refund_create_workflow).not_to have_received(:call)
+      end
+
+      it 'succeeds with no authorization' do
+        expect(gateway.cancel(payment.response_code, payment)).to be_success.and have_attributes(authorization: nil)
+      end
+    end
+
+    %w[pending processing checkout].each do |incomplete_status|
+      context "when the payment is #{incomplete_status}" do
+        let(:status) { incomplete_status }
+
+        it 'succeeds without calling PayPal' do
+          expect(gateway.cancel(payment.response_code, payment)).to be_success
+          expect(gateway).not_to have_received(:client)
+        end
+
+        it 'does not refund' do
+          gateway.cancel(payment.response_code, payment)
+
+          expect(Spree.refund_create_workflow).not_to have_received(:call)
+        end
+
+        it 'returns no authorization' do
+          expect(gateway.cancel(payment.response_code, payment).authorization).to be_nil
+        end
+      end
+    end
+
+    context 'when there is no payment' do
+      it 'succeeds without calling PayPal' do
+        expect(gateway.cancel('ORDER-1')).to be_success
+        expect(gateway).not_to have_received(:client)
       end
     end
   end
