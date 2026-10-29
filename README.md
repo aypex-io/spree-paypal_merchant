@@ -25,7 +25,11 @@ releases, on the `5-2-stable` branch.
   `SET_PROVIDED_ADDRESS` so PayPal does not re-collect it.
 - PayPal **captures at checkout**, whatever capture method the store defaults
   to. Authorize now, capture later is not supported: a payment method whose own
-  capture method is `on_dispatch` or `manual` is refused.
+  capture method is `on_dispatch` or `manual` is refused. Spree never captures a
+  PayPal payment on dispatch, and never treats one as left for staff to collect.
+- A payment session's amount is fixed once its PayPal order exists. Changing
+  it is refused: the storefront creates a new session instead. The payment
+  records the amount PayPal captured.
 - The storefront's confirm call and PayPal's webhook settle through the same
   Spree path, in either order. Whichever arrives first creates the payment; the
   other changes nothing.
@@ -75,8 +79,24 @@ ignored.
 |---|---|
 | `PAYMENT.CAPTURE.COMPLETED` | Settles the payment as captured |
 | `PAYMENT.CAPTURE.PENDING` | Settles it as pending (an eCheck, say); `COMPLETED` completes it later |
-| `PAYMENT.CAPTURE.DENIED`, `PAYMENT.CAPTURE.DECLINED` | Fails the payment session if it is still open. A payment already left pending by `PAYMENT.CAPTURE.PENDING` stays pending (no money was taken); fail it by hand |
+| `PAYMENT.CAPTURE.DENIED`, `PAYMENT.CAPTURE.DECLINED` | Fails the payment session if it is still open. A payment already left pending by `PAYMENT.CAPTURE.PENDING` stays pending (no money was taken); use Capture in the dashboard: it reads PayPal and fails the payment if PayPal denied the capture (or completes it if PayPal completed it) |
 | `PAYMENT.CAPTURE.REVERSED`, `PAYMENT.CAPTURE.REFUNDED` | Cancels the payment session if it is still open and the event names the PayPal order. A completed session and its payment are left as they are, so a refund or chargeback made in PayPal does not change the Spree payment |
+
+## In the dashboard
+
+- **Capture** on a pending PayPal payment reads PayPal and settles the payment
+  the way PayPal did. It completes the payment if PayPal completed the capture,
+  and fails it if PayPal denied or declined it. It never captures again. While
+  PayPal is still processing the capture, or can't be reached, Capture says so
+  and the payment stays pending, so Capture can be pressed again. Capture takes
+  the whole payment: PayPal captured it all at checkout.
+- **Canceling an order** with Spree's default (`refund_payments: false`) marks
+  a completed PayPal payment void in Spree while PayPal keeps the money. Refund
+  the payment in the dashboard before canceling the order, or refund it in
+  PayPal.
+- **Void** always fails. A PayPal payment holds captured money, so refund it
+  instead. One PayPal is still processing can't be voided or canceled; refund
+  it once PayPal completes it.
 
 ## Apple Pay
 
@@ -109,19 +129,20 @@ Bump the gem to `~> 6.0` as part of your Spree 6 upgrade.
   `external_data` keys and `public_preferences` are unchanged, so the gem asks
   nothing new of the storefront.
 - **The 5.x checkout flow is gone.** `Spree::PaypalMerchant::Order`,
-  `CreatePayment`, `CaptureOrder`, the order's `paypal_id`, and the gateway's
-  `authorize`, `purchase`, `capture` and `find_order` are removed, along with
-  the ERB admin views. Spree 6 has no Rails admin; its dashboard builds the
-  settings form from the gateway's preferences. The `spree_paypal_merchant_orders`
-  table stays.
+  `CreatePayment`, `CaptureOrder`, the order's `paypal_id` and the gateway's
+  `find_order` are removed, along with the ERB admin views. Spree 6 has no Rails
+  admin; its dashboard builds the settings form from the gateway's preferences.
+  The `spree_paypal_merchant_orders` table stays. The gateway's `authorize` and
+  `purchase` now fail, since PayPal payments are taken through a payment
+  session, and `capture` reads PayPal (see "In the dashboard").
 
 Three things to know before you cut over:
 
 1. **Webhooks are one-shot.** Spree 6 settles a payment webhook in a
    background job and does not retry a failed one. PayPal does not send it
    again, because Spree already answered 200. If the gem cannot read PayPal's
-   order, or the order shows no completed or pending capture, that event is
-   dropped. The storefront's confirm step, or a later PayPal event, settles the
+   order, or the order shows no completed, pending or partly refunded capture,
+   that event is dropped. The storefront's confirm step, or a later PayPal event, settles the
    payment instead.
 2. **Check PayPal for captures still pending** (an eCheck, say). Under 5.x a
    pending capture was recorded as a completed payment. After the upgrade the
@@ -138,6 +159,14 @@ Three things to know before you cut over:
   with two decimals, so those currencies aren't supported.
 - Multi-seller checkouts, where one payment covers several orders, aren't
   tested.
+- If the storefront confirms the payment but never completes the cart (the
+  buyer closes the tab between the two calls), PayPal's later `COMPLETED`
+  event doesn't place the cart. That is Spree's design: a webhook places the
+  cart only when it is what settles the payment. The payment sits on an
+  unplaced cart, and the order has to be placed by hand.
+- If the webhook settles first and completing the cart then fails (stock, a
+  validation, tax), Spree rolls the payment back with it, and the one-shot event
+  is dropped. The storefront's confirm call settles the payment instead.
 
 ## Developing
 
