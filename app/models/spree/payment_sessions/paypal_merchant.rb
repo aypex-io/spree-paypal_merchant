@@ -92,6 +92,19 @@ module Spree
     end
 
     ##
+    # Stores a PayPal order read from PayPal on the session. The order's own
+    # fields replace the stored ones; the keys the storefront put there
+    # (+client_token+, +enable_apple_pay+, +enable_card_fields+) stay, because
+    # the session can still be open when it is stored.
+    #
+    # @param paypal_order [Hash] a PayPal order as JSON
+    # @return [void]
+    #
+    def store_paypal_order!(paypal_order)
+      update!(external_data: (external_data || {}).merge(paypal_order))
+    end
+
+    ##
     # Reads the PayPal order before settlement, so the settlement lock holds
     # across no PayPal I/O. Skipped once the capture has reached a final status.
     #
@@ -104,10 +117,7 @@ module Spree
     # @raise [Spree::Core::GatewayError] unless the capture is COMPLETED or PENDING
     #
     def prepare_for_settlement!
-      unless capture_settled?
-        response = payment_method.fetch_paypal_order(external_id)
-        update!(external_data: response.data.as_json)
-      end
+      store_paypal_order!(payment_method.fetch_paypal_order(external_id).data.as_json) unless capture_settled?
 
       return self if PAID_CAPTURE_STATUSES.include?(paypal_capture_status)
 

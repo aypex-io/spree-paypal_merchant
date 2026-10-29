@@ -518,6 +518,42 @@ RSpec.describe Spree::PaypalMerchant::Gateway::PaymentSessions do
       end
     end
 
+    # The storefront keeps reading these from the session while it is still open.
+    context 'when the session carries the storefront keys' do
+      let(:storefront_keys) { { 'client_token' => 'test-client-token', 'enable_apple_pay' => true, 'enable_card_fields' => true } }
+      let(:payment_session) do
+        create(:paypal_merchant_payment_session, cart: cart, payment_method: gateway, external_data: fixture('paypal_order').merge(storefront_keys))
+      end
+
+      context 'when the capture is answered with a server error' do
+        before { allow(orders_api).to receive(:capture_order).and_raise(paypal_api_error(503)) }
+
+        it 'leaves the session pending with the storefront keys' do
+          expect { complete }.to raise_error(Spree::Core::GatewayError)
+
+          expect(payment_session.reload).to be_pending.and have_attributes(external_data: a_hash_including(storefront_keys))
+        end
+      end
+
+      context 'when the capture is COMPLETED' do
+        it 'stores the captured order over the stored one and keeps the storefront keys' do
+          complete
+
+          expect(payment_session.reload.external_data).to eq(captured.merge(storefront_keys))
+        end
+      end
+
+      context 'when the capture is PENDING' do
+        let(:captured) { captured_order('PENDING') }
+
+        it 'stores the captured order and keeps the storefront keys' do
+          complete
+
+          expect(payment_session.reload).to have_attributes(paypal_capture_status: 'PENDING', external_data: a_hash_including(storefront_keys))
+        end
+      end
+    end
+
     [429, 503].each do |status_code|
       context "when a #{status_code} hid a capture that went through" do
         before { allow(orders_api).to receive(:capture_order).and_raise(paypal_api_error(status_code)) }

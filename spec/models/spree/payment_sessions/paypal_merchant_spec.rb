@@ -321,6 +321,33 @@ RSpec.describe Spree::PaymentSessions::PaypalMerchant do
       it 'returns the session' do
         expect(session.prepare_for_settlement!).to eq(session)
       end
+
+      # The storefront reads these from the session while it is still open.
+      context 'when the stored session data carries the storefront keys' do
+        let(:external_data) do
+          created_data.merge('client_token' => 'test-client-token', 'enable_apple_pay' => true, 'enable_card_fields' => false)
+        end
+
+        it 'keeps the storefront keys after fetching' do
+          session.prepare_for_settlement!
+
+          expect(session.reload.external_data).to include(
+            'client_token' => 'test-client-token', 'enable_apple_pay' => true, 'enable_card_fields' => false
+          )
+        end
+
+        it 'reads the capture from the fetched order' do
+          session.prepare_for_settlement!
+
+          expect(session.reload).to have_attributes(paypal_capture_status: 'COMPLETED', paypal_capture_id: '6F473251BB811841E')
+        end
+
+        it 'overwrites the stored order fields with the fetched ones' do
+          session.prepare_for_settlement!
+
+          expect(session.reload.external_data).to include('status' => captured_data['status'], 'payer' => captured_data['payer'])
+        end
+      end
     end
 
     context 'when the capture is pending' do

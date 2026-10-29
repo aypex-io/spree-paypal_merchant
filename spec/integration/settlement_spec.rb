@@ -65,7 +65,8 @@ RSpec.describe 'PayPal settlement through confirm and webhook' do
   let(:captured) { captured_order('COMPLETED') }
   let(:capture_id) { captured['purchase_units'][0]['payments']['captures'][0]['id'] }
   # The order as PayPal holds it before anyone captures it.
-  let(:created) { fixture('paypal_order').merge('id' => captured['id']) }
+  let(:storefront_keys) { { 'client_token' => 'test-client-token', 'enable_apple_pay' => true, 'enable_card_fields' => true } }
+  let(:created) { fixture('paypal_order').merge('id' => captured['id']).merge(storefront_keys) }
   let(:payment_session) do
     create(:paypal_merchant_payment_session, cart: cart, payment_method: gateway, amount: cart.total,
                                              external_id: captured['id'], external_data: created)
@@ -115,6 +116,10 @@ RSpec.describe 'PayPal settlement through confirm and webhook' do
 
     it 'never captures' do
       expect(orders_api).not_to have_received(:capture_order)
+    end
+
+    it 'keeps the storefront keys on the session' do
+      expect(payment_session.reload.external_data).to include(storefront_keys)
     end
 
     context 'when the storefront then confirms' do
@@ -215,6 +220,10 @@ RSpec.describe 'PayPal settlement through confirm and webhook' do
 
     it 'records the PayPal capture id on the payment' do
       expect(payments.sole.metadata['paypal_capture_id']).to eq(capture_id)
+    end
+
+    it 'kept the storefront keys through the failed confirm and the webhook' do
+      expect(payment_session.reload.external_data).to include(storefront_keys)
     end
   end
 

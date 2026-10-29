@@ -153,7 +153,7 @@ module Spree
             response = capture_paypal_order(payment_session.external_id)
           end
 
-          payment_session.update!(external_data: response.data.as_json)
+          payment_session.store_paypal_order!(response.data.as_json)
 
           case payment_session.paypal_capture_status
           when 'COMPLETED' then settle_session!(payment_session, captured: true)
