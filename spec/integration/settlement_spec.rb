@@ -16,10 +16,13 @@ RSpec.describe 'PayPal settlement through confirm and webhook' do
     instance_double(PaypalServerSdk::ApiResponse, data: order)
   end
 
-  # The captured order fixture, with its capture at the given status.
+  # The captured order fixture for the cart's total, with its capture at the
+  # given status. The payment records the amount PayPal captured.
   def captured_order(capture_status)
     fixture('captured_paypal_order').tap do |data|
-      data['purchase_units'][0]['payments']['captures'][0]['status'] = capture_status
+      total = format('%.2f', cart.total)
+      data['purchase_units'][0]['amount']['value'] = total
+      data['purchase_units'][0]['payments']['captures'][0].merge!('status' => capture_status, 'amount' => { 'currency_code' => 'USD', 'value' => total })
     end
   end
 

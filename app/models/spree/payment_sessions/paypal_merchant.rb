@@ -155,7 +155,11 @@ module Spree
     # Keeps the PayPal capture id on the payment: refunds are issued against
     # the capture, while the payment itself is keyed on the PayPal order id.
     #
-    # @param payment [Spree::Payment]
+    # The payment's amount is the amount PayPal captured, not the session's,
+    # so Spree records what PayPal took. Reads the capture already stored on
+    # the session; no PayPal call.
+    #
+    # @param payment [Spree::Payment] unsaved
     # @param metadata [Hash]
     # @return [void]
     #
@@ -163,6 +167,9 @@ module Spree
       super
       capture_id = paypal_capture_id
       payment.metadata['paypal_capture_id'] = capture_id if capture_id.present?
+
+      captured_value = paypal_capture&.dig('amount', 'value')
+      payment.amount = captured_value.to_d if captured_value.present?
     end
   end
 end

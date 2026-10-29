@@ -7,17 +7,25 @@ RSpec.describe Spree::PaymentSessions::PaypalMerchant do
     JSON.parse(File.read(Spree::PaypalMerchant::Engine.root.join("spec/fixtures/#{name}.json")))
   end
 
-  let(:captured_data) { fixture('captured_paypal_order') }
-  let(:apple_pay_data) { fixture('captured_apple_pay_order') }
+  # A captured order fixture whose capture took the cart's total: the payment
+  # records the amount PayPal captured.
+  def captured_for_cart(name)
+    fixture(name).tap do |data|
+      data['purchase_units'][0]['payments']['captures'][0]['amount'] = { 'currency_code' => cart.currency, 'value' => format('%.2f', cart.total) }
+    end
+  end
+
+  let(:captured_data) { captured_for_cart('captured_paypal_order') }
+  let(:apple_pay_data) { captured_for_cart('captured_apple_pay_order') }
   let(:created_data) { fixture('paypal_order') }
   let(:pending_data) do
-    fixture('captured_paypal_order').tap do |data|
+    captured_for_cart('captured_paypal_order').tap do |data|
       data['status'] = 'APPROVED'
       data['purchase_units'][0]['payments']['captures'][0]['status'] = 'PENDING'
     end
   end
   let(:declined_data) do
-    fixture('captured_paypal_order').tap do |data|
+    captured_for_cart('captured_paypal_order').tap do |data|
       data['purchase_units'][0]['payments']['captures'][0]['status'] = 'DECLINED'
     end
   end
@@ -264,6 +272,34 @@ RSpec.describe Spree::PaymentSessions::PaypalMerchant do
         payment = session.settle_payment!(captured: false)
 
         expect(payment.reload.metadata['paypal_capture_id']).to be_present
+      end
+    end
+
+    # The payment records what PayPal took, so Spree's books match PayPal's
+    # whatever the session says.
+    context 'when the session amount differs from the amount PayPal captured' do
+      let(:external_data) { captured_data.tap { |data| data['purchase_units'][0]['payments']['captures'][0]['amount']['value'] = '7.50' } }
+
+      before { session.update!(amount: cart.total) }
+
+      it 'records the captured amount on the payment' do
+        payment = session.settle_payment!(captured: true)
+
+        expect(payment.reload.amount).to eq(BigDecimal('7.50'))
+      end
+
+      it 'records the captured amount on a pending payment too' do
+        external_data['purchase_units'][0]['payments']['captures'][0]['status'] = 'PENDING'
+
+        expect(session.settle_payment!(captured: false).reload.amount).to eq(BigDecimal('7.50'))
+      end
+    end
+
+    context 'when the capture carries no amount' do
+      let(:external_data) { captured_data.tap { |data| data['purchase_units'][0]['payments']['captures'][0].delete('amount') } }
+
+      it 'records the session amount' do
+        expect(session.settle_payment!(captured: true).reload.amount).to eq(session.amount)
       end
     end
   end

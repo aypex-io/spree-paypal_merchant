@@ -105,18 +105,30 @@ module Spree
         end
 
         ##
-        # @param payment_session [Spree::PaymentSessions::PaypalMerchant]
-        # @param amount [Numeric, NilClass]
-        # @param external_data [Hash]
-        # @return [TrueClass, FalseClass, NilClass]
+        # Changes nothing: a PayPal session is fixed once its PayPal order
+        # exists.
         #
-        def update_payment_session(payment_session:, amount: nil, external_data: {})
-          attrs = {}
-          attrs[:amount] = amount if amount.present?
+        # The amount is the PayPal order's, and the payment records it, so a
+        # different amount is refused: the storefront creates a new session for
+        # the new amount. The same amount is accepted.
+        #
+        # +external_data+ is ignored. The gem writes every key the storefront
+        # reads (+id+, +status+, +client_token+, +enable_apple_pay+,
+        # +enable_card_fields+), and settlement reads PayPal's own order
+        # (+purchase_units+, +payment_source+), so no key is the client's to
+        # write.
+        #
+        # @param payment_session [Spree::PaymentSessions::PaypalMerchant]
+        # @param amount [Numeric, String, NilClass]
+        # @return [NilClass]
+        # @raise [Spree::Core::GatewayError] when the amount differs from the
+        #   session's
+        #
+        def update_payment_session(payment_session:, amount: nil, **_external_data)
+          return if amount.blank? || amount.to_d == payment_session.amount.to_d
 
-          attrs[:external_data] = (payment_session.external_data || {}).merge(external_data.stringify_keys) if external_data.present?
-
-          payment_session.update!(attrs) if attrs.any?
+          raise Spree::Core::GatewayError,
+                'The amount of a PayPal payment session cannot change; create a new payment session for the new amount'
         end
 
         ##

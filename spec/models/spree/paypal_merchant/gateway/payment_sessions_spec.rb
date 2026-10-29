@@ -13,10 +13,13 @@ RSpec.describe Spree::PaypalMerchant::Gateway::PaymentSessions do
     instance_double(PaypalServerSdk::ApiResponse, data: order)
   end
 
-  # The captured order fixture, with its capture at the given status.
+  # The captured order fixture for the cart's total, with its capture at the
+  # given status. The payment records the amount PayPal captured.
   def captured_order(capture_status)
     fixture('captured_paypal_order').tap do |data|
-      data['purchase_units'][0]['payments']['captures'][0]['status'] = capture_status
+      total = format('%.2f', cart.total)
+      data['purchase_units'][0]['amount']['value'] = total
+      data['purchase_units'][0]['payments']['captures'][0].merge!('status' => capture_status, 'amount' => { 'currency_code' => 'USD', 'value' => total })
     end
   end
 
@@ -291,11 +294,72 @@ RSpec.describe Spree::PaypalMerchant::Gateway::PaymentSessions do
   end
 
   describe '#update_payment_session' do
-    let(:payment_session) { create(:paypal_merchant_payment_session, cart: cart, payment_method: gateway) }
+    let(:storefront_keys) { { 'client_token' => 'test-client-token', 'enable_apple_pay' => true, 'enable_card_fields' => true } }
+    let(:stored_data) { fixture('paypal_order').merge(storefront_keys) }
+    let(:payment_session) do
+      create(:paypal_merchant_payment_session, cart: cart, payment_method: gateway, amount: cart.total, external_data: stored_data)
+    end
 
-    it 'updates the amount' do
-      gateway.update_payment_session(payment_session: payment_session, amount: 99.99)
-      expect(payment_session.reload.amount).to eq(99.99)
+    def update(**attributes)
+      gateway.update_payment_session(payment_session: payment_session, **attributes)
+    end
+
+    # The PayPal order keeps its amount, and the payment would record the new one.
+    context 'when the amount differs from the session amount' do
+      it 'raises a gateway error telling the caller to create a new session' do
+        expect { update(amount: cart.total + 10) }.to raise_error(Spree::Core::GatewayError, /create a new payment session/)
+      end
+
+      it 'leaves the session amount as it was' do
+        expect { update(amount: cart.total + 10) }.to raise_error(Spree::Core::GatewayError)
+
+        expect(payment_session.reload.amount).to eq(cart.total)
+      end
+
+      it 'refuses a lower amount too' do
+        expect { update(amount: cart.total - 1) }.to raise_error(Spree::Core::GatewayError)
+      end
+
+      it 'does not call PayPal' do
+        expect { update(amount: cart.total + 10) }.to raise_error(Spree::Core::GatewayError)
+
+        expect(gateway).not_to have_received(:client)
+      end
+    end
+
+    it 'accepts the amount the session already has, as the API sends it' do
+      expect { update(amount: format('%.2f', cart.total)) }.not_to raise_error
+    end
+
+    it 'accepts no amount' do
+      expect { update(amount: nil) }.not_to raise_error
+    end
+
+    # The gem writes every key the storefront reads, and PayPal's order is
+    # what settlement reads, so nothing a client sends is stored.
+    context 'when the client sends external_data' do
+      let(:client_data) do
+        {
+          'id' => 'OTHER-ORDER',
+          'status' => 'COMPLETED',
+          'purchase_units' => [{ 'payments' => { 'captures' => [{ 'id' => 'FAKE', 'status' => 'COMPLETED' }] } }],
+          'payment_source' => { 'paypal' => { 'account_id' => 'SOMEONE-ELSE' } },
+          'client_token' => 'client-chosen',
+          'enable_card_fields' => false
+        }
+      end
+
+      it 'stores none of it' do
+        update(external_data: client_data)
+
+        expect(payment_session.reload.external_data).to eq(stored_data)
+      end
+
+      it 'leaves the session with no capture' do
+        update(external_data: client_data)
+
+        expect(payment_session.reload.paypal_capture).to be_nil
+      end
     end
   end
 
