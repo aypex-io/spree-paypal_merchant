@@ -96,7 +96,9 @@ method's `public_preferences` keep their keys.
 
 ### Timeouts and retries
 
-- Every PayPal request has a 15-second timeout.
+- Every Orders and Payments API request has a 15-second timeout. The
+  gem's own webhook-verification and token requests time out after 5 seconds
+  to connect and 10 to read.
 - PayPal reads (GET) are retried up to 3 times.
 - Creating, capturing and refunding are never re-sent automatically.
 

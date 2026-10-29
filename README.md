@@ -75,8 +75,8 @@ ignored.
 |---|---|
 | `PAYMENT.CAPTURE.COMPLETED` | Settles the payment as captured |
 | `PAYMENT.CAPTURE.PENDING` | Settles it as pending (an eCheck, say); `COMPLETED` completes it later |
-| `PAYMENT.CAPTURE.DENIED`, `PAYMENT.CAPTURE.DECLINED` | Fails the payment session |
-| `PAYMENT.CAPTURE.REVERSED`, `PAYMENT.CAPTURE.REFUNDED` | Cancels the payment session, when the event names the PayPal order |
+| `PAYMENT.CAPTURE.DENIED`, `PAYMENT.CAPTURE.DECLINED` | Fails the payment session if it is still open. A payment already left pending by `PAYMENT.CAPTURE.PENDING` stays pending (no money was taken); fail it by hand |
+| `PAYMENT.CAPTURE.REVERSED`, `PAYMENT.CAPTURE.REFUNDED` | Cancels the payment session if it is still open and the event names the PayPal order. A completed session and its payment are left as they are, so a refund or chargeback made in PayPal does not change the Spree payment |
 
 ## Apple Pay
 
@@ -123,10 +123,11 @@ Three things to know before you cut over:
    order, or the order shows no completed or pending capture, that event is
    dropped. The storefront's confirm step, or a later PayPal event, settles the
    payment instead.
-2. **Check for PayPal payments still pending** (an eCheck, say). The gem
-   ignores events for checkouts settled under 5.x. After the upgrade, a pending
-   capture that completes later won't update its Spree payment. Settle those
-   payments by hand.
+2. **Check PayPal for captures still pending** (an eCheck, say). Under 5.x a
+   pending capture was recorded as a completed payment. After the upgrade the
+   gem ignores later PayPal events for checkouts settled under 5.x, so if
+   PayPal denies or reverses one of those captures, Spree won't change. Handle
+   any that fail by hand.
 3. **A source's profile id can change.** A PayPal wallet with no PayPal account
    id is now keyed by the cart's (or order's) prefixed id instead of the order
    number. Such a source isn't reused, and a new one is created.
