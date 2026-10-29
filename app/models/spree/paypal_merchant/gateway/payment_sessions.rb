@@ -237,7 +237,9 @@ module Spree
           return nil unless payment_session
           return nil if settled_before_spree_6?(payment_session, resource['id'])
 
-          { action: action, payment_session: payment_session, metadata: { paypal_event: event } }
+          # Names the event only: a caller merges this into the payment's metadata.
+          metadata = { paypal_event_id: event[:id], paypal_event_type: event[:event_type] }
+          { action: action, payment_session: payment_session, metadata: metadata }
         end
 
         private

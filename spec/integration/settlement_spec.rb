@@ -23,17 +23,21 @@ RSpec.describe 'PayPal settlement through confirm and webhook' do
     end
   end
 
-  # What the webhook controller's job does once a delivery has been parsed.
-  def deliver_webhook(event_type)
-    # An order event is about the order; a capture event is about the capture, and names its order.
+  # A PayPal event body. An order event is about the order; a capture event is
+  # about the capture, and names its order.
+  def webhook_body(event_type)
     resource = if event_type.start_with?('CHECKOUT.ORDER')
                  { 'id' => payment_session.external_id }
                else
                  { 'id' => capture_id, 'supplementary_data' => { 'related_ids' => { 'order_id' => payment_session.external_id } } }
                end
 
-    body = { event_type: event_type, resource: resource }.to_json
-    result = gateway.parse_webhook_event(body, {})
+    { id: 'WH-EVENT-1', event_type: event_type, resource: resource }.to_json
+  end
+
+  # What the webhook controller's job does once a delivery has been parsed.
+  def deliver_webhook(event_type)
+    result = gateway.parse_webhook_event(webhook_body(event_type), {})
     return if result.nil?
 
     Spree::Payments::HandleWebhookJob.perform_now(
@@ -41,8 +45,14 @@ RSpec.describe 'PayPal settlement through confirm and webhook' do
     )
   end
 
-  def handle_webhook(action)
-    Spree.payments_handle_webhook_workflow.call(payment_method: gateway, action: action, payment_session: payment_session)
+  # Runs the webhook workflow on a session loaded afresh, as the job loads it:
+  # the memoized `payment_session` can be stale (it may predate a confirm that
+  # captured and stored the order), which would make the workflow fail before it
+  # reached the settlement it is meant to exercise.
+  def handle_webhook(action, metadata: {})
+    Spree.payments_handle_webhook_workflow.call(
+      payment_method: gateway, action: action, payment_session: Spree::PaymentSession.find(payment_session.id), metadata: metadata
+    )
   end
 
   # The storefront's confirm call.
@@ -163,11 +173,30 @@ RSpec.describe 'PayPal settlement through confirm and webhook' do
       expect(cart.reload.order).to be_nil
     end
 
+    # The stored capture is COMPLETED, so the webhook needs no PayPal read, and
+    # core finds the payment completed and leaves it alone.
     context 'when the webhook then arrives' do
-      before { handle_webhook(:captured) }
+      let!(:payment_updated_at) { payments.sole.updated_at }
+      let!(:webhook_result) { deliver_webhook('PAYMENT.CAPTURE.COMPLETED') }
+
+      it 'runs the webhook workflow for a captured event' do
+        expect(Spree.payments_handle_webhook_workflow).to have_received(:call).with(hash_including(action: :captured))
+      end
+
+      it 'succeeds' do
+        expect(webhook_result).to be_success
+      end
+
+      it 'does not read the PayPal order again' do
+        expect(orders_api).to have_received(:get_order).once
+      end
 
       it 'still has exactly one payment' do
         expect(payments.count).to eq(1)
+      end
+
+      it 'leaves the payment as the confirm settled it' do
+        expect(payments.sole.updated_at).to eq(payment_updated_at)
       end
 
       it 'leaves the cart for the storefront to place' do
@@ -186,6 +215,27 @@ RSpec.describe 'PayPal settlement through confirm and webhook' do
     end
   end
 
+  # The job drops the parsed metadata today; a caller that passes it on must not
+  # merge the whole PayPal event into the payment.
+  context 'when a direct caller passes on the parsed event metadata' do
+    before do
+      parsed = gateway.parse_webhook_event(webhook_body('PAYMENT.CAPTURE.COMPLETED'), {})
+      handle_webhook(parsed[:action], metadata: parsed[:metadata])
+    end
+
+    it 'records the event id and type on the payment' do
+      expect(payments.sole.metadata).to include('paypal_event_id' => 'WH-EVENT-1', 'paypal_event_type' => 'PAYMENT.CAPTURE.COMPLETED')
+    end
+
+    it 'keeps the capture id' do
+      expect(payments.sole.metadata).to include('paypal_capture_id' => capture_id)
+    end
+
+    it 'does not record the PayPal event itself' do
+      expect(payments.sole.metadata).not_to have_key('paypal_event')
+    end
+  end
+
   context 'when PayPal delivers the same webhook twice' do
     before do
       deliver_webhook('PAYMENT.CAPTURE.COMPLETED')
@@ -199,13 +249,28 @@ RSpec.describe 'PayPal settlement through confirm and webhook' do
   # call then leaves the session pending, and the capture webhook is what
   # settles it.
   context 'when a capture hid behind a PayPal server error on confirm' do
-    before do
+    let!(:failed_confirm) do
       allow(orders_api).to receive_messages(get_order: paypal_response(created))
       allow(orders_api).to receive(:capture_order).and_raise(paypal_api_error(503))
-      expect(confirm).to be_failure
+      confirm
+    end
+    let!(:status_after_failed_confirm) { payment_session.reload.status }
 
+    before do
       allow(orders_api).to receive(:get_order).and_return(paypal_response(captured))
       deliver_webhook('PAYMENT.CAPTURE.COMPLETED')
+    end
+
+    it 'failed the confirm' do
+      expect(failed_confirm).to be_failure
+    end
+
+    it 'attempted the capture once' do
+      expect(orders_api).to have_received(:capture_order).once
+    end
+
+    it 'left the session pending after the failed confirm' do
+      expect(status_after_failed_confirm).to eq('pending')
     end
 
     it_behaves_like 'a placed cart paid once'

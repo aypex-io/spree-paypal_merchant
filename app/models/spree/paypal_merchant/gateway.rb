@@ -23,6 +23,15 @@ module Spree
         Net::OpenTimeout, Net::ReadTimeout, SocketError, Errno::ECONNREFUSED
       ].freeze
 
+      ##
+      # How many times the SDK repeats a request that PayPal answered with a
+      # retryable status (such as 503) or that timed out. The SDK retries
+      # only GET and PUT, never POST, so creating, capturing and refunding are
+      # never sent twice. The wait between attempts is the SDK's default: 1
+      # second, doubling.
+      #
+      MAX_RETRIES = 3
+
       include PaymentSessions
 
       GatewayResponse = Struct.new(:success, :message, :params, :authorization) do
@@ -143,6 +152,7 @@ module Spree
             o_auth_client_secret: preferred_client_secret
           ),
           environment: preferred_test_mode ? PaypalServerSdk::Environment::SANDBOX : PaypalServerSdk::Environment::PRODUCTION,
+          max_retries: MAX_RETRIES,
           logging_configuration: PaypalServerSdk::LoggingConfiguration.new(
             log_level: Logger::WARN,
             request_logging_config: PaypalServerSdk::RequestLoggingConfiguration.new(

@@ -92,6 +92,43 @@ RSpec.describe Spree::PaypalMerchant::Gateway do
     end
   end
 
+  # Stubbed at the HTTP level, so the SDK's own retry middleware is what runs.
+  describe '#client retries' do
+    let(:paypal_api) { 'https://api-m.sandbox.paypal.com' }
+    let(:order_url) { "#{paypal_api}/v2/checkout/orders/ORDER-1" }
+    let(:json_headers) { { 'Content-Type' => 'application/json' } }
+    let(:order_body) { { id: 'ORDER-1', status: 'APPROVED' }.to_json }
+
+    before do
+      stub_request(:post, "#{paypal_api}/v1/oauth2/token")
+        .to_return(status: 200, headers: json_headers, body: { access_token: 'token', token_type: 'Bearer', expires_in: 32_400 }.to_json)
+      # The wait between attempts is the SDK's default; the specs do not sit through it.
+      allow_any_instance_of(Faraday::Retry::Middleware).to receive(:sleep)
+    end
+
+    it 'retries a read that PayPal answers with a server error' do
+      stub_request(:get, order_url)
+        .to_return({ status: 503, headers: json_headers, body: '{}' }, { status: 200, headers: json_headers, body: order_body })
+
+      expect(gateway.fetch_paypal_order('ORDER-1').data).to have_attributes(id: 'ORDER-1', status: 'APPROVED')
+      expect(a_request(:get, order_url)).to have_been_made.twice
+    end
+
+    it 'gives up on a read after the third retry' do
+      stub_request(:get, order_url).to_return(status: 503, headers: json_headers, body: '{}')
+
+      expect { gateway.fetch_paypal_order('ORDER-1') }.to raise_error(PaypalServerSdk::APIException)
+      expect(a_request(:get, order_url)).to have_been_made.times(1 + Spree::PaypalMerchant::Gateway::MAX_RETRIES)
+    end
+
+    it 'never sends a capture twice, so a retry cannot capture a second time' do
+      stub_request(:post, "#{order_url}/capture").to_return(status: 503, headers: json_headers, body: '{}')
+
+      expect { gateway.client.orders.capture_order('id' => 'ORDER-1') }.to raise_error(PaypalServerSdk::APIException)
+      expect(a_request(:post, "#{order_url}/capture")).to have_been_made.once
+    end
+  end
+
   describe '#fetch_paypal_order' do
     let(:orders_api) { instance_double(PaypalServerSdk::OrdersController, get_order: paypal_response) }
     let(:paypal_response) { double(data: double(status: 'COMPLETED')) }

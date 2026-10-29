@@ -754,7 +754,7 @@ RSpec.describe Spree::PaypalMerchant::Gateway::PaymentSessions do
     let(:capture_id) { 'CAPTURE-456' }
     # A capture event names the capture in `id` and the PayPal order in `related_ids`.
     let(:raw_body) do
-      { event_type: event_type,
+      { id: 'WH-EVENT-1', event_type: event_type,
         resource: { 'id' => capture_id, 'supplementary_data' => { 'related_ids' => { 'order_id' => paypal_order_id } } } }.to_json
     end
     let(:signed_headers) do
@@ -816,9 +816,10 @@ RSpec.describe Spree::PaypalMerchant::Gateway::PaymentSessions do
     context 'when webhook_secret is blank in a local env' do
       before { gateway.update!(preferences: gateway.preferences.merge(webhook_secret: nil)) }
 
-      it 'passes the PayPal event on as metadata' do
+      # Whatever lands in metadata is merged into a payment's own, so it names the event, not the payload.
+      it 'passes on only the event id and type as metadata' do
         result = gateway.parse_webhook_event(raw_body, {})
-        expect(result[:metadata]).to include(paypal_event: a_hash_including('event_type' => 'PAYMENT.CAPTURE.COMPLETED'))
+        expect(result[:metadata]).to eq(paypal_event_id: 'WH-EVENT-1', paypal_event_type: 'PAYMENT.CAPTURE.COMPLETED')
       end
 
       # The approved order has not been captured, so there is nothing to settle:
