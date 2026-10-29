@@ -259,6 +259,67 @@ RSpec.describe Spree::PaymentSessions::PaypalMerchant do
       end
     end
 
+    # Spree keeps a source's profile id unique per source type, not per payment
+    # method, so the buyer's PayPal account can already have a source under
+    # another PayPal method (a second store, a recreated method). The money is
+    # captured, so the clash must not stop the payment.
+    context 'when another PayPal method already holds a source for the buyer' do
+      let!(:other_source) do
+        create(:paypal_merchant_payment_source, payment_method: create(:paypal_merchant_gateway, store: cart.store),
+                                                gateway_payment_profile_id: 'RX8ZD67CZ67RU')
+      end
+
+      before { allow(Rails.logger).to receive(:warn) }
+
+      it 'completes a payment without a source' do
+        payment = session.settle_payment!(captured: true)
+
+        expect(payment.reload).to have_attributes(source: nil, completed?: true)
+      end
+
+      it 'leaves the other source with its own method' do
+        session.settle_payment!(captured: true)
+
+        expect(other_source.reload.payment_method_id).not_to eq(gateway.id)
+      end
+
+      it 'logs the clash, without the buyer details' do
+        session.settle_payment!(captured: true)
+
+        expect(Rails.logger).to have_received(:warn).with(/RecordInvalid.*settling payment session #{session.id} without a source/)
+        expect(Rails.logger).not_to have_received(:warn).with(/RX8ZD67CZ67RU|personal\.example\.com/)
+      end
+    end
+
+    # A concurrent insert can pass the validation and fail on the unique index.
+    # The database error must not abort the settlement's transaction.
+    context 'when the database refuses the source' do
+      let(:clash) do
+        lambda do
+          Spree::PaypalMerchant::PaymentSources::Paypal.new(payment_method: gateway, gateway_payment_profile_id: 'TAKEN')
+                                                       .tap { |source| source.save!(validate: false) }
+        end
+      end
+
+      before do
+        Spree::PaypalMerchant::PaymentSources::Paypal.new(payment_method: gateway, gateway_payment_profile_id: 'TAKEN').save!(validate: false)
+        allow(Rails.logger).to receive(:warn)
+        allow_any_instance_of(Spree::PaypalMerchant::CreateSource).to receive(:call) { clash.call }
+      end
+
+      it 'completes a payment without a source' do
+        payment = session.settle_payment!(captured: true)
+
+        expect(payment.reload).to have_attributes(source: nil, completed?: true)
+      end
+
+      it 'logs the database error' do
+        session.settle_payment!(captured: true)
+
+        expect(Rails.logger).to have_received(:warn).with(/RecordNotUnique/)
+      end
+    end
+
     context 'when the capture is still pending' do
       let(:external_data) { pending_data }
 

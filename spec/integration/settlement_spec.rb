@@ -218,6 +218,40 @@ RSpec.describe 'PayPal settlement through confirm and webhook' do
     end
   end
 
+  # Spree keeps a source's profile id unique per source type, not per payment
+  # method. A buyer whose PayPal account already has a source under another
+  # PayPal method (a second store, a recreated method) must still be settled:
+  # PayPal has the money.
+  context "when another PayPal method already holds a source for the buyer's PayPal account" do
+    let(:account_id) { captured['payment_source']['paypal']['account_id'] }
+    let(:other_gateway) { create(:paypal_merchant_gateway, store: cart.store) }
+
+    before do
+      create(:paypal_merchant_payment_source, payment_method: other_gateway, gateway_payment_profile_id: account_id)
+      allow(orders_api).to receive(:get_order).and_return(paypal_response(created))
+    end
+
+    let!(:confirm_result) { confirm }
+
+    it 'confirms' do
+      expect(confirm_result).to be_success
+    end
+
+    it 'completes the session' do
+      expect(payment_session.reload).to be_completed
+    end
+
+    it 'settles a completed payment with no source' do
+      expect(payments.sole).to have_attributes(completed?: true, source: nil)
+    end
+
+    context 'when the storefront then places the cart' do
+      before { Spree.carts_complete_workflow.call(cart: cart.reload) }
+
+      it_behaves_like 'a placed cart paid once'
+    end
+  end
+
   # The job drops the parsed metadata today; a caller that passes it on must not
   # merge the whole PayPal event into the payment.
   context 'when a direct caller passes on the parsed event metadata' do

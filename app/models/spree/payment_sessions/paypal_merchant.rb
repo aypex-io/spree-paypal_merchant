@@ -130,25 +130,34 @@ module Spree
     # Runs inside the settlement lock, so it reads only what
     # {#prepare_for_settlement!} already stored.
     #
-    # A source type the gem does not know is logged and skipped: the funds
-    # are already captured, so the payment settles without a source.
+    # The funds are already captured, so a source that cannot be recorded is
+    # logged and skipped, and the payment settles without one:
+    # - a source type the gem does not know;
+    # - a source Spree refuses. Spree keeps a profile id unique per source
+    #   type, not per payment method, so the buyer's PayPal account can
+    #   already have a source under another PayPal method (a second store, a
+    #   recreated method).
+    #
+    # The source is written in a savepoint, so a refusal from the database
+    # leaves the settlement's own transaction usable.
     #
     # @return [Spree::PaymentSource, NilClass]
     #
     def payment_source_for_settlement
       return nil if paypal_payment_source.blank?
 
-      Spree::PaypalMerchant::CreateSource.new(
-        paypal_payment_source: paypal_payment_source,
-        gateway: payment_method,
-        owner: owner
-      ).call
+      self.class.transaction(requires_new: true) do
+        Spree::PaypalMerchant::CreateSource.new(
+          paypal_payment_source: paypal_payment_source,
+          gateway: payment_method,
+          owner: owner
+        ).call
+      end
     rescue ArgumentError
-      Rails.logger.warn(
-        "[spree-paypal_merchant] unsupported PayPal payment source (#{paypal_payment_source.keys.join(', ')}); " \
-        "settling payment session #{id} without a source"
-      )
-      nil
+      settle_without_source("unsupported PayPal payment source (#{paypal_payment_source.keys.join(', ')})")
+    rescue ActiveRecord::RecordInvalid, ActiveRecord::RecordNotUnique => e
+      # The class only: the error's message can carry the buyer's PayPal account id.
+      settle_without_source("PayPal payment source not recorded (#{e.class})")
     end
 
     ##
@@ -170,6 +179,13 @@ module Spree
 
       captured_value = paypal_capture&.dig('amount', 'value')
       payment.amount = captured_value.to_d if captured_value.present?
+    end
+
+    private
+
+    def settle_without_source(reason)
+      Rails.logger.warn("[spree-paypal_merchant] #{reason}; settling payment session #{id} without a source")
+      nil
     end
   end
 end
