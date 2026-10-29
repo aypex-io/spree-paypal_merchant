@@ -27,6 +27,11 @@ Gem::Specification.new do |s|
   s.files = Dir['{app,config,db,lib}/**/*', 'LICENSE', 'Rakefile', 'README.md', 'CHANGELOG.md']
   s.require_path = 'lib'
 
+  # The gem rescues Faraday's errors and Net::HTTP::Persistent::Error, which the
+  # PayPal SDK's HTTP client raises. Both arrive through the SDK, so these
+  # follow its own ranges (faraday ~> 2.0, net-http-persistent >= 4.0.4, < 5).
+  s.add_dependency 'faraday', '~> 2.0'
+  s.add_dependency 'net-http-persistent', '~> 4.0'
   s.add_dependency 'paypal-server-sdk', '~> 2.3'
   s.add_dependency 'spree', '~> 6.0'
 

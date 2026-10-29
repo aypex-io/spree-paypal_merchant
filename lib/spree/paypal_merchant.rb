@@ -10,9 +10,9 @@ module Spree
     ##
     # Table prefix for models nested under this module.
     #
-    # Must live on the module, not on {Base}. ActiveRecord walks
-    # `module_parents` for `table_name_prefix` and finds `Spree` first
-    # (`"spree_"`) unless this closer parent defines it.
+    # Must live on this module. ActiveRecord walks `module_parents` for
+    # `table_name_prefix` and finds `Spree` first (`"spree_"`) unless this
+    # closer parent defines it.
     #
     # @return [String]
     #
