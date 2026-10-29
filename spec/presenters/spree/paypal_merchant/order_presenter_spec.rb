@@ -19,9 +19,10 @@ RSpec.describe Spree::PaypalMerchant::OrderPresenter do
     cart.recalculate_totals!
   end
 
+  # What PayPal adds up: charges less discounts, all as sent.
   def breakdown_sum
-    breakdown.item_total.value.to_d + breakdown.shipping.value.to_d + (breakdown.handling&.value || 0).to_d +
-      breakdown.tax_total.value.to_d - breakdown.discount.value.to_d
+    value = ->(field) { (breakdown.public_send(field)&.value || 0).to_d }
+    %i[item_total shipping handling tax_total].sum(&value) - %i[shipping_discount discount].sum(&value)
   end
 
   context 'line_item.name' do
@@ -99,6 +100,10 @@ RSpec.describe Spree::PaypalMerchant::OrderPresenter do
       expect(breakdown.discount.value).to eq('0.00')
     end
 
+    it 'omits the shipping discount when there is none' do
+      expect(breakdown.shipping_discount).to be_nil
+    end
+
     context 'when a promotion discounts the cart' do
       before { add_promotion_discount(cart, 3) }
 
@@ -108,6 +113,37 @@ RSpec.describe Spree::PaypalMerchant::OrderPresenter do
 
       it 'adds up to the amount PayPal charges' do
         expect([amount.value, breakdown_sum]).to eq(['7.00', 7.to_d])
+      end
+    end
+
+    # A small cart with dear shipping: the free-shipping discount is bigger than
+    # the item total, so it can't go in `discount`.
+    context 'when a free-shipping promotion discounts delivery' do
+      let(:cart) { create(:cart_ready_for_delivery, shipping_cost: 15) }
+
+      before do
+        create(:order_promotion, order: nil, cart: cart, promotion: create(:free_shipping_promotion))
+        cart.recalculate_totals!
+      end
+
+      it 'sends the shipping cost, whole' do
+        expect(breakdown.shipping.value).to eq('15.00')
+      end
+
+      it 'sends the discount as the shipping discount' do
+        expect(breakdown.shipping_discount.value).to eq('15.00')
+      end
+
+      it 'keeps it out of the item discount' do
+        expect(breakdown.discount.value).to eq('0.00')
+      end
+
+      it 'adds up to the amount PayPal charges' do
+        expect([amount.value, breakdown_sum]).to eq(['10.00', 10.to_d])
+      end
+
+      it 'still sends the items' do
+        expect(items).not_to be_nil
       end
     end
 
@@ -145,18 +181,11 @@ RSpec.describe Spree::PaypalMerchant::OrderPresenter do
     end
   end
 
-  # PayPal refuses an order whose breakdown doesn't add up to the amount, so
-  # when it can't, the amount goes alone.
-  context 'when the totals cannot balance' do
-    let(:cart) { create(:cart_ready_for_delivery) }
-
-    # Delivery moved without the total following it.
-    before do
-      cart.update_columns(delivery_total: 4) # rubocop:disable Rails/SkipsModelValidations
-    end
-
+  # PayPal refuses an order whose breakdown doesn't add up to the amount, or
+  # has a negative figure, so when it can't be sent the amount goes alone.
+  shared_examples 'an amount sent alone' do |total|
     it 'sends the amount, as the total' do
-      expect(amount.value).to eq('20.00')
+      expect(amount.value).to eq(total)
     end
 
     it 'sends no breakdown' do
@@ -170,6 +199,28 @@ RSpec.describe Spree::PaypalMerchant::OrderPresenter do
     it 'still sends the shipping address' do
       expect(purchase_unit.shipping).not_to be_nil
     end
+  end
+
+  context 'when the totals cannot balance' do
+    let(:cart) { create(:cart_ready_for_delivery) }
+
+    # Delivery moved without the total following it.
+    before do
+      cart.update_columns(delivery_total: 4) # rubocop:disable Rails/SkipsModelValidations
+    end
+
+    it_behaves_like 'an amount sent alone', '20.00'
+  end
+
+  context 'when the tax total is negative' do
+    let(:cart) { create(:cart_ready_for_delivery) }
+
+    # 10.00 + 10.00 - 2.00 is the 18.00 total, so only the sign is wrong.
+    before do
+      cart.update_columns(additional_tax_total: -2, total: 18) # rubocop:disable Rails/SkipsModelValidations
+    end
+
+    it_behaves_like 'an amount sent alone', '18.00'
   end
 
   context 'tax_total breakdown (PayPal AMOUNT_MISMATCH guard)' do
@@ -256,6 +307,32 @@ RSpec.describe Spree::PaypalMerchant::OrderPresenter do
 
     it 'names the currency on every amount' do
       expect([amount.currency_code, breakdown.item_total.currency_code, items.first.unit_amount.currency_code]).to all(eq('JPY'))
+    end
+
+    context 'with shipping and a fee' do
+      let(:cart) { create(:cart_ready_for_delivery, store: store, currency: 'JPY', line_items_price: BigDecimal('1500')) }
+
+      # The delivery needs a stock location and a delivery method in the store.
+      before do
+        create(:stock_location, store: store)
+        create(:delivery_method, store: store).calculator.tap do |calculator|
+          calculator.preferred_amount = 500
+          calculator.preferred_currency = 'JPY'
+          calculator.save!
+        end
+        add_fee(cart, 200)
+      end
+
+      it 'sends every amount as whole yen' do
+        expect(
+          [amount.value, breakdown.item_total.value, breakdown.shipping.value, breakdown.handling.value, breakdown.tax_total.value,
+           breakdown.discount.value]
+        ).to eq(%w[2200 1500 500 200 0 0])
+      end
+
+      it 'adds up to the amount PayPal charges' do
+        expect(breakdown_sum).to eq(2200)
+      end
     end
   end
 
@@ -370,6 +447,21 @@ RSpec.describe Spree::PaypalMerchant::OrderPresenter do
 
     it 'adds up to the amount PayPal charges' do
       expect(breakdown_sum).to eq(amount.value.to_d)
+    end
+
+    context 'with a manual discount on the order' do
+      before do
+        create(:discount, line_item: order.line_items.first, order: order, cart: nil, amount: -3)
+        order.recalculate_totals!
+      end
+
+      it 'counts the manual discount' do
+        expect(breakdown.discount.value).to eq('3.00')
+      end
+
+      it 'adds up to the amount PayPal charges' do
+        expect([amount.value, breakdown_sum]).to eq(['17.00', 17.to_d])
+      end
     end
   end
 end

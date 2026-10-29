@@ -20,6 +20,7 @@ module Spree
     #
     class OrderPresenter
       PAYPAL_ITEM_NAME_MAX_LENGTH = 127
+      BREAKDOWN_FIELDS = %i[item_total shipping handling tax_total shipping_discount discount].freeze
 
       ##
       # @param owner [Spree::Cart, Spree::Order] a cart during checkout, an order
@@ -100,23 +101,54 @@ module Spree
           shipping: paypal_money(owner.delivery_total),
           handling: handling,
           tax_total: paypal_money(owner.additional_tax_total),
-          discount: paypal_money(discount_total)
+          shipping_discount: shipping_discount,
+          discount: paypal_money(line_item_discount_rows_total)
         )
       end
 
-      # PayPal checks item_total + shipping + handling + tax_total - discount
-      # against the amount, to the minor unit, and refuses the order when they
-      # differ. Spree's own totals add up, so this only fails when a total is
-      # out of step with the rest.
+      # PayPal checks item_total + shipping + handling + tax_total -
+      # shipping_discount - discount against the amount, to the minor unit, and
+      # refuses the order when they differ; it also refuses a negative figure.
+      # Spree's own totals add up, so this only fails when a total is out of
+      # step with the rest.
       def breakdown_balances?
-        charges = [breakdown.item_total, breakdown.shipping, breakdown.handling, breakdown.tax_total].compact
-        charges.sum { |money| money.value.to_d } - breakdown.discount.value.to_d == format_amount(owner.total).to_d
+        return false if BREAKDOWN_FIELDS.any? { |field| breakdown_value(field).negative? }
+
+        charges = %i[item_total shipping handling tax_total].sum { |field| breakdown_value(field) }
+        discounts = %i[shipping_discount discount].sum { |field| breakdown_value(field) }
+        charges - discounts == format_amount(owner.total).to_d
       end
 
-      # Every discount row, promotion and manual: the owner's total takes off
-      # both, while its discount_total counts promotions only.
-      def discount_total
-        @discount_total ||= owner.discounts.sum(:amount).abs
+      def breakdown_value(field)
+        (breakdown.public_send(field)&.value || 0).to_d
+      end
+
+      # A free-shipping promotion discounts a delivery, not an item: PayPal's
+      # `shipping_discount`. Left out when there is none, like `handling`.
+      def shipping_discount
+        discount = paypal_money(fulfillment_discount_rows_total)
+        discount unless discount.value.to_d.zero?
+      end
+
+      # NOTE: these two figures sum the owner's discount rows, promotion and
+      # manual alike. Do not change them to owner.discount_total: that counts
+      # promotion rows only, while the owner's total takes off every row, so a
+      # manual discount would unbalance the breakdown.
+      #
+      # Discount rows attach to a line item or to a fulfillment. One grouped
+      # query reads both sums, once per presenter.
+      def line_item_discount_rows_total
+        discount_rows_totals.fetch(false, 0).abs
+      end
+
+      def fulfillment_discount_rows_total
+        discount_rows_totals.fetch(true, 0).abs
+      end
+
+      # @return [Hash{Boolean => BigDecimal}] sums keyed on whether the rows
+      #   attach to a fulfillment; a key with no rows is absent
+      def discount_rows_totals
+        @discount_rows_totals ||= owner.discounts.group(Arel.sql('fulfillment_id IS NOT NULL')).sum(:amount)
       end
 
       # Fees (a handling or payment charge, say) are PayPal's `handling`. Left
@@ -159,7 +191,7 @@ module Spree
       end
 
       def items_add_up?(paypal_items)
-        paypal_items.sum { |item| item.unit_amount.value.to_d * item.quantity.to_i } == paypal_money(owner.item_total).value.to_d
+        paypal_items.sum { |item| item.unit_amount.value.to_d * item.quantity.to_i } == breakdown_value(:item_total)
       end
 
       def shipping_details
