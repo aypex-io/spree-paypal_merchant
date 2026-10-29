@@ -3,169 +3,294 @@
 require 'spec_helper'
 
 RSpec.describe Spree::PaypalMerchant::OrderPresenter do
-  let(:order) { build_stubbed(:order, line_items: [line_item]) }
-  subject { described_class.new(order) }
+  # A cart during checkout: one line of 10.00, nothing else.
+  let(:cart) { create(:cart_with_line_items) }
+  subject { described_class.new(cart) }
+
+  let(:body) { subject.to_json['body'] }
+  let(:purchase_unit) { body.purchase_units[0] }
+  let(:amount) { purchase_unit.amount }
+  let(:breakdown) { amount.breakdown }
+  let(:items) { purchase_unit.items }
+
+  # A handling fee on the cart, with the totals recalculated to include it.
+  def add_fee(cart, fee_amount)
+    create(:fee, order: nil, cart: cart, amount: fee_amount)
+    cart.recalculate_totals!
+  end
+
+  def breakdown_sum
+    breakdown.item_total.value.to_d + breakdown.shipping.value.to_d + (breakdown.handling&.value || 0).to_d +
+      breakdown.tax_total.value.to_d - breakdown.discount.value.to_d
+  end
 
   context 'line_item.name' do
+    let(:line_item) { cart.line_items.first }
+
     context 'when line_item.name is longer than 127 characters' do
-      let(:line_item) do
-        item = build_stubbed(:line_item)
-        allow(item).to receive(:name).and_return('A' * 200)
-        item
-      end
+      before { allow(line_item).to receive(:name).and_return('A' * 200) }
 
       it 'truncates to 127 characters' do
-        item = subject.to_json['body'].purchase_units[0].items.first
-        expect(item.name.length).to eq(127)
+        expect(items.first.name.length).to eq(127)
       end
     end
 
     context 'when line_item.name is nil' do
-      let(:line_item) do
-        item = build_stubbed(:line_item)
-        allow(item).to receive(:name).and_return(nil)
-        item
-      end
+      before { allow(line_item).to receive(:name).and_return(nil) }
 
       it 'handles nil without raising' do
-        expect(subject.to_json['body'].purchase_units[0].items.first.name).to eq('')
+        expect(items.first.name).to eq('')
+      end
+    end
+  end
+
+  context 'breakdown' do
+    let(:cart) { create(:cart_ready_for_delivery) }
+
+    context 'when the cart has a fee' do
+      before { add_fee(cart, 2) }
+
+      it 'sends the fee total as handling' do
+        expect(breakdown.handling.value).to eq('2.00')
+      end
+
+      it 'sends the delivery total as shipping' do
+        expect(breakdown.shipping.value).to eq('10.00')
+      end
+
+      it 'sends the item total' do
+        expect(breakdown.item_total.value).to eq('10.00')
+      end
+
+      it 'charges the cart total, as currency text' do
+        expect(amount.value).to eq('22.00')
+      end
+
+      it 'adds up to the amount PayPal charges' do
+        expect(breakdown_sum).to eq(amount.value.to_d)
+      end
+    end
+
+    context 'when the cart has no fees' do
+      it 'omits handling' do
+        expect(breakdown.handling).to be_nil
+      end
+
+      it 'adds up to the amount PayPal charges' do
+        expect(breakdown_sum).to eq(amount.value.to_d)
       end
     end
   end
 
   context 'discount' do
-    let(:line_item) do
-      item = build_stubbed(:line_item)
-      allow(item).to receive(:name).and_return('Item')
-      item
+    it 'passes a positive number to PayPal for a negative discount_total' do
+      allow(cart).to receive(:discount_total).and_return(BigDecimal('-3'))
+      expect(breakdown.discount.value).to eq('3.00')
     end
 
-    it 'passes a positive number to PayPal for a negative promo_total' do
-      allow(order).to receive(:promo_total).and_return(-100)
-      expect(subject.to_json['body'].purchase_units[0].amount.breakdown.discount.value).to eq('100')
+    it 'sends zero when nothing is discounted' do
+      expect(breakdown.discount.value).to eq('0.00')
     end
   end
 
   context 'tax_total breakdown (PayPal AMOUNT_MISMATCH guard)' do
-    let(:line_item) do
-      item = build_stubbed(:line_item)
-      allow(item).to receive(:name).and_return('Item')
-      item
-    end
-
-    def breakdown
-      subject.to_json['body'].purchase_units[0].amount.breakdown
-    end
-
-    context 'tax-inclusive order (e.g. UK/EU VAT)' do
+    context 'tax-inclusive cart (e.g. UK/EU VAT)' do
       before do
-        allow(order).to receive(:item_total).and_return(120.0)
-        allow(order).to receive(:included_tax_total).and_return(20.0)
-        allow(order).to receive(:additional_tax_total).and_return(0.0)
-        allow(order).to receive(:tax_total).and_return(20.0)
-        allow(order).to receive(:ship_total).and_return(0.0)
-        allow(order).to receive(:promo_total).and_return(0)
-        allow(order).to receive(:total).and_return(120.0)
+        allow(cart).to receive_messages(item_total: 120.0, included_tax_total: 20.0, additional_tax_total: 0.0, tax_total: 20.0,
+                                        delivery_total: 0.0, discount_total: 0, total: 120.0)
       end
 
       it 'sends only additional tax so it does not double-count included VAT' do
-        expect(breakdown.tax_total.value).to eq('0.0')
+        expect(breakdown.tax_total.value).to eq('0.00')
       end
 
       it 'reconciles value == item_total + tax_total + shipping - discount' do
-        sum = breakdown.item_total.value.to_d + breakdown.tax_total.value.to_d +
-              breakdown.shipping.value.to_d - breakdown.discount.value.to_d
-        expect(sum).to eq(order.total.to_d)
+        expect(breakdown_sum).to eq(cart.total.to_d)
       end
     end
 
-    context 'tax-exclusive order (e.g. US)' do
+    context 'tax-exclusive cart (e.g. US)' do
       before do
-        allow(order).to receive(:item_total).and_return(100.0)
-        allow(order).to receive(:included_tax_total).and_return(0.0)
-        allow(order).to receive(:additional_tax_total).and_return(8.0)
-        allow(order).to receive(:tax_total).and_return(8.0)
-        allow(order).to receive(:ship_total).and_return(5.0)
-        allow(order).to receive(:promo_total).and_return(0)
-        allow(order).to receive(:total).and_return(113.0)
+        allow(cart).to receive_messages(item_total: 100.0, included_tax_total: 0.0, additional_tax_total: 8.0, tax_total: 8.0,
+                                        delivery_total: 5.0, discount_total: 0, total: 113.0)
       end
 
       it 'sends additional_tax_total' do
-        expect(breakdown.tax_total.value).to eq('8.0')
+        expect(breakdown.tax_total.value).to eq('8.00')
+      end
+
+      it 'reconciles value == item_total + tax_total + shipping - discount' do
+        expect(breakdown_sum).to eq(amount.value.to_d)
       end
     end
   end
 
+  context 'items' do
+    context 'when unit prices have two decimals' do
+      let(:cart) { create(:cart_with_line_items, line_items_count: 2, line_items_price: BigDecimal('12.34')) }
+
+      it 'sends the items, each at its unit price' do
+        expect(items.map { |item| item.unit_amount.value }).to eq(%w[12.34 12.34])
+      end
+
+      it 'sends items that add up to the item total' do
+        sum = items.sum { |item| item.unit_amount.value.to_d * item.quantity.to_i }
+        expect(sum).to eq(breakdown.item_total.value.to_d)
+      end
+    end
+
+    context 'when a unit price has four decimals' do
+      let(:cart) { create(:cart_with_line_items, line_items_count: 0) }
+
+      before do
+        create(:line_item, cart: cart, order: nil, price: BigDecimal('1.2345'), quantity: 3)
+        cart.line_items.reload
+        cart.recalculate_totals!
+      end
+
+      it 'rounds the item total to the currency' do
+        expect(breakdown.item_total.value).to eq('3.70')
+      end
+
+      # 3 x 1.23 is 3.69 against the 3.70 line total, which PayPal would reject
+      # as an item total mismatch.
+      it 'sends no items, because they cannot add up to the item total' do
+        expect(items).to be_nil
+      end
+
+      it 'keeps the breakdown' do
+        expect(breakdown_sum).to eq(amount.value.to_d)
+      end
+    end
+  end
+
+  context 'in a currency without decimals' do
+    let(:store) { create(:store, default_currency: 'JPY', supported_currencies: 'JPY') }
+    let(:cart) { create(:cart_with_line_items, store: store, currency: 'JPY', line_items_price: BigDecimal('1500')) }
+
+    it 'sends every amount without decimals' do
+      expect(
+        [amount.value, breakdown.item_total.value, breakdown.shipping.value, breakdown.tax_total.value, breakdown.discount.value,
+         items.first.unit_amount.value]
+      ).to eq(%w[1500 1500 0 0 0 1500])
+    end
+
+    it 'names the currency on every amount' do
+      expect([amount.currency_code, breakdown.item_total.currency_code, items.first.unit_amount.currency_code]).to all(eq('JPY'))
+    end
+  end
+
   context 'charge amount (gift card / store credit covers part of the order)' do
-    let(:line_item) do
-      item = build_stubbed(:line_item)
-      allow(item).to receive(:name).and_return('Item')
-      item
+    let(:cart) { create(:cart_ready_for_delivery) }
+
+    before { add_fee(cart, 2) }
+
+    it 'charges the cart total by default' do
+      expect(amount.value).to eq('22.00')
     end
 
-    before do
-      allow(order).to receive(:item_total).and_return(75.0)
-      allow(order).to receive(:additional_tax_total).and_return(0.0)
-      allow(order).to receive(:ship_total).and_return(3.0)
-      allow(order).to receive(:promo_total).and_return(0)
-      allow(order).to receive(:total).and_return(78.0)
-    end
+    context 'when the amount due is less than the cart total' do
+      subject { described_class.new(cart, amount: cart.total - 10) }
 
-    def amount_for(presenter)
-      presenter.to_json['body'].purchase_units[0].amount
-    end
-
-    it 'charges the order total by default' do
-      expect(amount_for(subject).value).to eq('78.0')
-    end
-
-    context 'when the amount due is less than the order total' do
-      subject { described_class.new(order, amount: 58.0) }
-
-      it 'charges only the amount due, not the full order total' do
-        expect(amount_for(subject).value).to eq('58.0')
+      it 'charges only the amount due, not the full total' do
+        expect(amount.value).to eq('12.00')
       end
 
       it 'omits the breakdown and items, which would sum to the full total' do
-        expect(amount_for(subject).breakdown).to be_nil
-        expect(subject.to_json['body'].purchase_units[0].items).to be_nil
+        expect(breakdown).to be_nil
+        expect(items).to be_nil
+      end
+    end
+
+    context 'when the amount due is the cart total' do
+      subject { described_class.new(cart, amount: cart.total) }
+
+      it 'keeps the breakdown and items' do
+        expect(breakdown).not_to be_nil
+        expect(items).not_to be_nil
       end
     end
   end
 
   context 'provided shipping address (storefront owns the address)' do
-    let(:line_item) do
-      item = build_stubbed(:line_item)
-      allow(item).to receive(:name).and_return('Item')
-      item
-    end
+    context 'when the cart has a ship address' do
+      let(:cart) { create(:cart_ready_for_delivery) }
+      let(:ship_address) { cart.ship_address }
 
-    def body
-      subject.to_json['body']
-    end
-
-    context 'when the order has a ship address' do
-      let(:ship_address) { build_stubbed(:address) }
-      before { allow(order).to receive(:ship_address).and_return(ship_address) }
+      def address
+        purchase_unit.shipping.address
+      end
 
       it 'sends the storefront-collected address to PayPal' do
-        address = body.purchase_units[0].shipping.address
         expect(address.address_line_1).to eq(ship_address.address1)
+      end
+
+      it 'sends the postal code and country code' do
+        expect([address.postal_code, address.country_code]).to eq([ship_address.postal_code, 'US'])
+      end
+
+      it 'sends the state code as the region' do
+        expect(address.admin_area_1).to eq(ship_address.state_code)
       end
 
       it 'pins the address so the PayPal wallet does not re-collect it' do
         expect(body.payment_source.paypal.experience_context.shipping_preference)
           .to eq(PaypalServerSdk::PaypalWalletContextShippingPreference::SET_PROVIDED_ADDRESS)
       end
+
+      context 'when the address has a free-text state instead of a state code' do
+        let(:ship_address) { build_stubbed(:address, state: nil, state_name: 'Free Text Region') }
+
+        before { allow(cart).to receive(:ship_address).and_return(ship_address) }
+
+        it 'sends the state name as the region' do
+          expect(address.admin_area_1).to eq('Free Text Region')
+        end
+      end
     end
 
-    context 'when the order has no ship address' do
-      before { allow(order).to receive(:ship_address).and_return(nil) }
+    context 'when the cart has no ship address' do
+      before { allow(cart).to receive(:ship_address).and_return(nil) }
+
+      it 'sends no shipping details' do
+        expect(purchase_unit.shipping).to be_nil
+      end
 
       it 'disables the PayPal shipping step' do
         expect(body.payment_source.paypal.experience_context.shipping_preference)
           .to eq(PaypalServerSdk::PaypalWalletContextShippingPreference::NO_SHIPPING)
       end
+    end
+  end
+
+  # The suite raises on a Spree deprecation, so building the whole payload from
+  # a cart with every kind of total and an address is the check that it reads
+  # only current Spree names.
+  context 'with every kind of total and an address' do
+    let(:cart) { create(:cart_ready_for_delivery) }
+
+    before { add_fee(cart, 2) }
+
+    it 'uses no deprecated Spree names' do
+      expect { subject.to_json }.not_to raise_error
+    end
+  end
+
+  context 'when the owner is a placed order' do
+    let(:cart) { create(:cart_ready_to_complete) }
+    let(:order) do
+      Spree::Carts::Complete.call(cart: cart)
+      cart.reload.order
+    end
+
+    subject { described_class.new(order) }
+
+    it 'reads the order totals' do
+      expect([amount.value, breakdown.item_total.value, breakdown.shipping.value]).to eq(%w[20.00 10.00 10.00])
+    end
+
+    it 'adds up to the amount PayPal charges' do
+      expect(breakdown_sum).to eq(amount.value.to_d)
     end
   end
 end
