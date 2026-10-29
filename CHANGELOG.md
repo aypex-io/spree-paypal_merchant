@@ -101,8 +101,8 @@ method's `public_preferences` keep their keys.
   Before, it raised `ActiveModel::UnknownAttributeError`.
 - Canceling an order with Spree's default (`refund_payments: false`) marks a
   completed PayPal payment void in Spree while PayPal keeps the money. Refund
-  it before canceling, or refund it in PayPal. A failed, void or invalid payment cancels in Spree
-  with no PayPal call.
+  it before canceling, or refund it in PayPal.
+- A failed, void or invalid payment cancels in Spree with no PayPal call.
 - Void always fails. PayPal payments are captured at checkout, so there is
   nothing to void: refund the payment instead.
 

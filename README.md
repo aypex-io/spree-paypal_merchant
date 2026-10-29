@@ -95,8 +95,8 @@ ignored.
   the payment in the dashboard before canceling the order, or refund it in
   PayPal.
 - **Void** always fails. A PayPal payment holds captured money, so refund it
-  instead. One PayPal is still processing can't be voided or canceled; refund
-  it once PayPal completes it.
+  instead. One that PayPal is still processing can't be voided or canceled;
+  refund it once PayPal completes it.
 
 ## Apple Pay
 
@@ -126,8 +126,9 @@ Bump the gem to `~> 6.0` as part of your Spree 6 upgrade.
 - **Old payments refund as before.** A payment taken on 5.x refunds through the
   capture id stored on it.
 - **The storefront contract is the same.** The Store API type,
-  `external_data` keys and `public_preferences` are unchanged, so the gem asks
-  nothing new of the storefront.
+  `external_data` keys and `public_preferences` are unchanged. One thing is
+  refused: a session's amount can't be changed after it is created, so a
+  storefront that updated it must create a new payment session instead.
 - **The 5.x checkout flow is gone.** `Spree::PaypalMerchant::Order`,
   `CreatePayment`, `CaptureOrder`, the order's `paypal_id` and the gateway's
   `find_order` are removed, along with the ERB admin views. Spree 6 has no Rails
