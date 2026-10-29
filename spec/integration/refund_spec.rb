@@ -478,4 +478,124 @@ RSpec.describe 'PayPal payment that PayPal is still processing' do
       expect(Spree::Refund.where(payment_id: payment.id).sole).to have_attributes(transaction_id: 'REFUND-1')
     end
   end
+
+  # The dashboard's Capture action runs Spree's capture workflow. It reads
+  # PayPal and settles the payment the way PayPal did; it never captures again.
+  describe 'capturing it from the dashboard' do
+    def capture_payment
+      Spree.payment_capture_workflow.call(payment: payment)
+    end
+
+    before { allow(orders_api).to receive(:capture_order) }
+
+    context 'when PayPal has completed the capture' do
+      before { allow(orders_api).to receive(:get_order).and_return(paypal_response(captured)) }
+
+      let!(:result) { capture_payment }
+
+      it 'succeeds' do
+        expect(result).to be_success
+      end
+
+      it 'completes the payment with one capture' do
+        expect([payment.status, payment.capture_events.count]).to eq(['completed', 1])
+      end
+
+      it 'keeps the PayPal order id as the response code, so the session still finds its payment' do
+        expect([payment.response_code, payment_session.reload.payment]).to eq([payment_session.external_id, payment])
+      end
+
+      it 'never captures at PayPal' do
+        expect(orders_api).not_to have_received(:capture_order)
+      end
+
+      context "when PayPal's completed event then arrives" do
+        before { deliver_webhook('PAYMENT.CAPTURE.COMPLETED') }
+
+        it 'leaves the one completed payment with its one capture' do
+          expect([payment.status, payment.capture_events.count]).to eq(['completed', 1])
+        end
+      end
+    end
+
+    context 'when PayPal is still processing the capture' do
+      let!(:result) { capture_payment }
+
+      it 'fails, saying PayPal is still processing the payment' do
+        expect([result.failure?, result.error.to_s]).to match([true, /PayPal is still processing this payment/])
+      end
+
+      it 'puts the payment back to pending' do
+        expect(payment).to be_pending
+      end
+
+      it 'can be captured again once PayPal completes it' do
+        allow(orders_api).to receive(:get_order).and_return(paypal_response(captured))
+
+        expect([capture_payment.success?, payment.status]).to eq([true, 'completed'])
+      end
+
+      context 'when PayPal then completes it' do
+        before do
+          allow(orders_api).to receive(:get_order).and_return(paypal_response(captured))
+          deliver_webhook('PAYMENT.CAPTURE.COMPLETED')
+        end
+
+        it 'completes the payment' do
+          expect(payment).to be_completed
+        end
+      end
+    end
+
+    # The denied event leaves the payment pending (the session has completed);
+    # Capture is how it is cleared.
+    context 'when PayPal denied the capture' do
+      before do
+        allow(orders_api).to receive(:get_order).and_return(paypal_response(captured_order('DECLINED')))
+        deliver_webhook('PAYMENT.CAPTURE.DENIED')
+      end
+
+      let!(:result) { capture_payment }
+
+      it 'fails the payment' do
+        expect([result.failure?, payment.status]).to eq([true, 'failed'])
+      end
+
+      it 'lets the order be canceled' do
+        expect(cancel_order).to be_success
+      end
+    end
+
+    # PayPal took the whole amount; a smaller capture would split off a
+    # remainder PayPal never holds.
+    context 'when asked to capture less than PayPal captured' do
+      before { allow(orders_api).to receive(:get_order).and_return(paypal_response(captured)) }
+
+      let!(:result) { Spree.payment_capture_workflow.call(payment: payment, amount: payment.amount - 1) }
+
+      it 'fails, naming what PayPal captured' do
+        expect([result.failure?, result.error.to_s]).to match([true, /PayPal captured/])
+      end
+
+      it 'puts the payment back to pending, with no other payment' do
+        expect([payment.status, Spree::Payment.where(order_id: placed_order.id).count]).to eq(['pending', 1])
+      end
+    end
+
+    context 'when PayPal cannot be reached' do
+      before { allow(orders_api).to receive(:get_order).and_raise(Faraday::ConnectionFailed) }
+
+      let!(:result) { capture_payment }
+
+      it 'fails, and puts the payment back to pending' do
+        expect([result.failure?, payment.status]).to eq([true, 'pending'])
+      end
+
+      it 'completes the payment when tried again once PayPal answers' do
+        allow(orders_api).to receive(:get_order).and_return(paypal_response(captured))
+
+        expect([capture_payment.success?, payment.status]).to eq([true, 'completed'])
+      end
+    end
+  end
 end

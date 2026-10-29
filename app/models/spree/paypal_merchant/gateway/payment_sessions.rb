@@ -145,9 +145,10 @@ module Spree
         # Does not complete the cart — that is handled by Carts::Complete.
         #
         # Only a refusal from PayPal fails the session. When the outcome is
-        # unknown (no answer, a server error, a rate limit), PayPal may have
-        # captured anyway, so the session stays pending: a retry reads the
-        # order first and settles a capture that went through.
+        # unknown (no answer, a server error, an answer that cannot be read, a
+        # rate limit), PayPal may have captured anyway, so the session stays
+        # pending: a retry reads the order first and settles a capture that
+        # went through.
         #
         # @param payment_session [Spree::PaymentSessions::PaypalMerchant]
         # @param params [Hash] not used
@@ -176,9 +177,9 @@ module Spree
           payment_session
         rescue PaypalServerSdk::APIException => e
           payment_session.fail if paypal_refusal?(e) && payment_session.can_fail?
-          raise Spree::Core::GatewayError, "PayPal API error: #{e.message}"
-        rescue *CONNECTION_ERRORS => e
-          raise Spree::Core::GatewayError, "PayPal connection error: #{e.message}"
+          raise Spree::Core::GatewayError, "PayPal API error: #{paypal_error_text(e)}"
+        rescue *UNKNOWN_OUTCOME_ERRORS => e
+          raise Spree::Core::GatewayError, unknown_outcome_message(e)
         end
 
         ##

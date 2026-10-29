@@ -69,14 +69,93 @@ RSpec.describe Spree::PaypalMerchant::Gateway do
     end
   end
 
-  it 'has no pre-session capture flow' do
-    # Spree::Gateway delegates authorize/purchase/capture to #provider, so
-    # respond_to? is always true; check that this gateway defines none itself.
+  it 'has no 5.x checkout flow' do
     own_methods = described_class.instance_methods(false) + described_class.private_instance_methods(false)
 
-    expect(own_methods).not_to include(:authorize, :purchase, :capture, :find_order)
+    expect(own_methods).not_to include(:find_order)
     expect(defined?(Spree::PaypalMerchant::Order)).to be_nil
     expect(Spree::Order.new).not_to respond_to(:paypal_id)
+  end
+
+  # Spree::Gateway hands authorize, purchase and capture it does not define to
+  # #provider, which this gateway cannot build. Each answers for itself.
+  it 'answers authorize, purchase and capture itself' do
+    own_methods = described_class.instance_methods(false)
+
+    expect(own_methods).to include(:authorize, :purchase, :capture)
+  end
+
+  # PayPal captures at checkout. A store default must not make Spree treat a
+  # pending PayPal payment as one it captures on dispatch or leaves to staff.
+  describe '#resolved_capture_method' do
+    %w[checkout on_dispatch manual].each do |store_default|
+      context "when the store defaults to #{store_default}" do
+        before { store.update!(preferred_capture_method: store_default) }
+
+        it 'is checkout' do
+          expect(gateway.resolved_capture_method).to eq('checkout')
+        end
+
+        it 'captures at checkout, never on dispatch or by hand' do
+          expect([gateway.capture_at_checkout?, gateway.capture_on_dispatch?, gateway.capture_manually?]).to eq([true, false, false])
+        end
+      end
+    end
+
+    context 'when the store defaults to on_dispatch and an order holds a pending PayPal payment' do
+      let(:order) { create(:order_ready_to_ship, store: store, with_payment: false) }
+      let!(:paypal_payment) do
+        create(:payment, order: order, payment_method: gateway, source: nil, amount: order.total, status: 'pending', response_code: 'ORDER-1',
+                         skip_source_requirement: true)
+      end
+
+      before { store.update!(preferred_capture_method: 'on_dispatch') }
+
+      it 'leaves the PayPal payment out of the payments the fulfillment captures on dispatch' do
+        expect(order.reload.fulfillments.first.payments_to_capture_on_dispatch).not_to include(paypal_payment)
+      end
+    end
+  end
+
+  # Spree's checkout processing would send these. A PayPal payment is taken
+  # through a payment session, so there is nothing to authorize or purchase.
+  %i[authorize purchase].each do |verb|
+    describe "##{verb}" do
+      let(:response) { gateway.public_send(verb, Spree::Money.new(10, currency: 'USD'), nil, {}) }
+
+      it 'is not a success' do
+        expect(response).not_to be_success
+      end
+
+      it 'says PayPal payments are taken through a payment session' do
+        expect(response.message).to match(/through a PayPal payment session/)
+      end
+
+      it 'does not call PayPal' do
+        allow(gateway).to receive(:client)
+
+        response
+
+        expect(gateway).not_to have_received(:client)
+      end
+    end
+  end
+
+  # A failure marks the payment failed; a raise would leave it processing,
+  # which void and cancel read as PayPal still completing it.
+  context 'when Spree processes a PayPal payment outside a session' do
+    let(:order) { create(:completed_order_with_totals, store: store) }
+    let(:payment_source) { Spree::PaypalMerchant::PaymentSources::Paypal.create!(payment_method: gateway, account_id: 'PAYPAL-ACCOUNT-123') }
+    let(:payment) { create(:payment, order: order, payment_method: gateway, source: payment_source, amount: order.total, status: 'checkout') }
+    let!(:result) { Spree.payment_process_workflow.call(payment: payment) }
+
+    it 'fails, saying PayPal payments are taken through a payment session' do
+      expect([result.failure?, result.error.to_s]).to match([true, /through a PayPal payment session/])
+    end
+
+    it 'marks the payment failed, so it can be canceled' do
+      expect(payment.reload).to be_failed
+    end
   end
 
   it "finds the store's active PayPal gateway" do
@@ -101,6 +180,12 @@ RSpec.describe Spree::PaypalMerchant::Gateway do
       expect(PaypalServerSdk::Client).to have_received(:new).with(
         hash_including(timeout: Spree::PaypalMerchant::Gateway::REQUEST_TIMEOUT, max_retries: Spree::PaypalMerchant::Gateway::MAX_RETRIES)
       )
+    end
+
+    it 'lets the SDK repeat only GET and PUT' do
+      gateway.client
+
+      expect(PaypalServerSdk::Client).to have_received(:new).with(hash_including(retry_methods: %i[get put]))
     end
 
     it 'limits a request to 15 seconds and retries a read 3 times' do
@@ -575,6 +660,25 @@ RSpec.describe Spree::PaypalMerchant::Gateway do
         it_behaves_like 'a refund PayPal did not confirm'
       end
     end
+
+    # A 502 or 503 with an HTML body: the SDK cannot build its error, so it
+    # raises TypeError instead of an APIException. PayPal may have refunded.
+    context 'when PayPal sends a server error that is not JSON' do
+      before { allow(payments_api).to receive(:refund_captured_payment).and_raise(unreadable_paypal_answer) }
+
+      it_behaves_like 'a refund PayPal did not confirm'
+
+      it 'says PayPal sent an answer that could not be read' do
+        expect(gateway.credit(money, nil, 'ORDER-1', options).message).to include('PayPal sent an answer that could not be read')
+      end
+    end
+
+    # Any other TypeError is a bug, not an answer from PayPal.
+    it 'lets a TypeError that is not about the JSON through' do
+      allow(payments_api).to receive(:refund_captured_payment).and_raise(TypeError, "nil can't be coerced into BigDecimal")
+
+      expect { gateway.credit(money, nil, 'ORDER-1', options) }.to raise_error(TypeError, /coerced/)
+    end
   end
 
   describe '#cancel' do
@@ -714,5 +818,204 @@ RSpec.describe Spree::PaypalMerchant::Gateway do
         expect(gateway).not_to have_received(:client)
       end
     end
+  end
+
+  # Spree's Capture action, for a payment left pending by a pending PayPal
+  # capture. PayPal captured at checkout, so this only reads the PayPal order
+  # and reports what PayPal did.
+  describe '#capture' do
+    let(:orders_api) { instance_double(PaypalServerSdk::OrdersController) }
+    let(:capture_status) { 'COMPLETED' }
+    let(:captures) { [{ 'id' => 'CAP-1', 'status' => capture_status, 'amount' => { 'currency_code' => 'USD', 'value' => '30.00' } }] }
+    let(:paypal_order) { { 'id' => 'ORDER-1', 'status' => 'COMPLETED', 'purchase_units' => [{ 'payments' => { 'captures' => captures } }] } }
+    let(:money) { Spree::Money.new(30, currency: 'USD') }
+
+    def paypal_response(data)
+      order = instance_double(PaypalServerSdk::Order, id: data['id'], status: data['status'], as_json: data)
+      instance_double(PaypalServerSdk::ApiResponse, data: order)
+    end
+
+    def capture
+      gateway.capture(money, 'ORDER-1', {})
+    end
+
+    before do
+      allow(gateway).to receive(:client).and_return(instance_double(PaypalServerSdk::Client, orders: orders_api))
+      allow(orders_api).to receive(:get_order).and_return(paypal_response(paypal_order))
+      allow(orders_api).to receive(:capture_order)
+    end
+
+    context 'when PayPal completed the capture' do
+      it 'succeeds' do
+        expect(capture).to be_success
+      end
+
+      it 'reads the PayPal order named by the response code' do
+        capture
+
+        expect(orders_api).to have_received(:get_order).with('id' => 'ORDER-1', 'prefer' => 'return=representation')
+      end
+
+      it 'never captures at PayPal' do
+        capture
+
+        expect(orders_api).not_to have_received(:capture_order)
+      end
+
+      # Spree copies a non-nil authorization into the payment's response code,
+      # which is the PayPal order id that links the payment to its session.
+      it 'returns no authorization' do
+        expect(capture.authorization).to be_nil
+      end
+
+      context 'when asked for less than PayPal captured' do
+        let(:money) { Spree::Money.new(10, currency: 'USD') }
+
+        it 'raises, since PayPal took the whole amount' do
+          expect { capture }.to raise_error(Spree::Core::GatewayError, /PayPal captured 30.00 USD/)
+        end
+      end
+    end
+
+    context 'when PayPal is still processing the capture' do
+      let(:capture_status) { 'PENDING' }
+
+      it 'raises, saying PayPal is still processing the payment' do
+        expect { capture }.to raise_error(Spree::Core::GatewayError, /PayPal is still processing this payment/)
+      end
+    end
+
+    # A failed response makes Spree fail the payment: no money moved.
+    %w[DECLINED FAILED].each do |status|
+      context "when PayPal's capture is #{status}" do
+        let(:capture_status) { status }
+
+        it 'fails, with the status' do
+          expect(capture).to have_attributes(success?: false, message: "PayPal did not take this payment (capture #{status}).")
+        end
+      end
+    end
+
+    # Money moved and came back, or none is recorded: settling that is for the
+    # merchant, so nothing changes.
+    %w[REFUNDED PARTIALLY_REFUNDED].each do |status|
+      context "when PayPal's capture is #{status}" do
+        let(:capture_status) { status }
+
+        it 'raises, naming the status' do
+          expect { capture }.to raise_error(Spree::Core::GatewayError, /#{status}/)
+        end
+      end
+    end
+
+    context 'when the PayPal order holds no capture' do
+      let(:captures) { [] }
+
+      it 'raises' do
+        expect { capture }.to raise_error(Spree::Core::GatewayError, /no capture/)
+      end
+    end
+
+    # Without PayPal's answer the payment is left as it is, to be tried again.
+    context 'when PayPal cannot be read' do
+      [503, 404].each do |status|
+        it "raises when PayPal answers #{status}" do
+          allow(orders_api).to receive(:get_order).and_raise(PaypalServerSdk::APIException.new('PayPal error', double(status_code: status)))
+
+          expect { capture }.to raise_error(Spree::Core::GatewayError, /PayPal API error/)
+        end
+      end
+
+      Spree::PaypalMerchant::Gateway::CONNECTION_ERRORS.each do |error_class|
+        it "raises when the request fails with #{error_class}" do
+          allow(orders_api).to receive(:get_order).and_raise(error_class)
+
+          expect { capture }.to raise_error(Spree::Core::GatewayError)
+        end
+      end
+
+      it 'raises when PayPal sends a server error that is not JSON' do
+        allow(orders_api).to receive(:get_order).and_raise(unreadable_paypal_answer)
+
+        expect { capture }.to raise_error(Spree::Core::GatewayError)
+      end
+    end
+
+    # Spree's capture workflow claims the payment (processing) before it asks
+    # the gateway, and has no undo for a raise. Each raise puts the payment
+    # back to pending, so Capture can be pressed again.
+    context "when Spree has claimed one of the gateway's own payments" do
+      let(:order) { create(:completed_order_with_totals, store: store) }
+      let(:status) { 'processing' }
+      let(:payment) do
+        create(:payment, order: order, payment_method: gateway, source: nil, amount: 30, status: status, response_code: 'ORDER-1',
+                         skip_source_requirement: true)
+      end
+
+      def capture
+        gateway.capture(money, 'ORDER-1', payment.gateway_options)
+      end
+
+      {
+        'PayPal is still processing the capture' => -> { captures[0]['status'] = 'PENDING' },
+        'PayPal cannot be read' => -> { allow(orders_api).to receive(:get_order).and_raise(Faraday::ConnectionFailed) },
+        'PayPal sends a server error that is not JSON' => -> { allow(orders_api).to receive(:get_order).and_raise(unreadable_paypal_answer) },
+        'the amount differs from what PayPal captured' => -> { captures[0]['amount']['value'] = '29.00' },
+        "PayPal's capture is REFUNDED" => -> { captures[0]['status'] = 'REFUNDED' }
+      }.each do |situation, arrange|
+        context "when #{situation}" do
+          before { instance_exec(&arrange) }
+
+          it 'raises and puts the payment back to pending' do
+            expect { capture }.to raise_error(Spree::Core::GatewayError)
+
+            expect(payment.reload).to be_pending
+          end
+        end
+      end
+
+      context 'when PayPal declined the capture' do
+        let(:capture_status) { 'DECLINED' }
+
+        it 'leaves the status to Spree, which fails the payment' do
+          expect(capture).not_to be_success
+          expect(payment.reload).to be_processing
+        end
+      end
+
+      # A webhook that completed the payment meanwhile wins.
+      context 'when the payment completed while PayPal was asked' do
+        let(:status) { 'completed' }
+        let(:capture_status) { 'PENDING' }
+
+        it 'leaves it completed' do
+          expect { capture }.to raise_error(Spree::Core::GatewayError)
+
+          expect(payment.reload).to be_completed
+        end
+      end
+
+      context 'when the payment belongs to another payment method' do
+        let(:capture_status) { 'PENDING' }
+        let(:payment) do
+          create(:payment, order: order, payment_method: create(:check_payment_method, store: store), source: nil, amount: 30,
+                           status: 'processing')
+        end
+
+        it 'leaves it alone' do
+          expect { capture }.to raise_error(Spree::Core::GatewayError)
+
+          expect(payment.reload).to be_processing
+        end
+      end
+    end
+  end
+
+  # What the SDK raises for a PayPal server error whose body is not JSON (an
+  # HTML error page): building its error fails before an APIException exists.
+  def unreadable_paypal_answer
+    PaypalServerSdk::ErrorException.new('Bad gateway', double(status_code: 502, raw_body: '<html>Bad gateway</html>'))
+  rescue TypeError => e
+    e
   end
 end

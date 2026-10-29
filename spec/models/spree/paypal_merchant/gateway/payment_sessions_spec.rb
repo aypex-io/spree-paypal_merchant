@@ -33,6 +33,21 @@ RSpec.describe Spree::PaypalMerchant::Gateway::PaymentSessions do
     PaypalServerSdk::ErrorException.new('Unprocessable', double(status_code: status_code, raw_body: body.to_json))
   end
 
+  # A PayPal error body with no message of its own, only issue descriptions:
+  # the SDK's error then has a nil message.
+  def paypal_error_without_message(status_code, description)
+    body = { name: 'UNPROCESSABLE_ENTITY', details: [{ issue: 'INSTRUMENT_DECLINED', description: description }] }
+    PaypalServerSdk::ErrorException.new('Unprocessable', double(status_code: status_code, raw_body: body.to_json))
+  end
+
+  # What the SDK raises for a PayPal server error whose body is not JSON (an
+  # HTML error page): building its error fails before an APIException exists.
+  def unreadable_paypal_answer
+    PaypalServerSdk::ErrorException.new('Bad gateway', double(status_code: 502, raw_body: '<html>Bad gateway</html>'))
+  rescue TypeError => e
+    e
+  end
+
   # Read from the database: the cart factory leaves `cart.payments` loaded,
   # so the association would not see a payment created through another copy.
   def payments_on_cart
@@ -278,6 +293,23 @@ RSpec.describe Spree::PaypalMerchant::Gateway::PaymentSessions do
         expect { gateway.create_payment_session(order: cart) }.to raise_error(Spree::Core::GatewayError, /connection error/)
 
         expect(open_session.reload).to be_pending
+      end
+    end
+
+    context 'when PayPal sends a server error that is not JSON' do
+      before { allow(orders_api).to receive(:create_order).and_raise(unreadable_paypal_answer) }
+
+      it 'raises a gateway error saying PayPal sent an answer that could not be read' do
+        expect { gateway.create_payment_session(order: cart) }.to raise_error(Spree::Core::GatewayError, /could not be read/)
+      end
+    end
+
+    # The SDK's error has a nil message when PayPal's body carries none.
+    context 'when PayPal refuses the order with issue descriptions only' do
+      before { allow(orders_api).to receive(:create_order).and_raise(paypal_error_without_message(422, 'The order was refused')) }
+
+      it "raises a gateway error with PayPal's description" do
+        expect { gateway.create_payment_session(order: cart) }.to raise_error(Spree::Core::GatewayError, 'PayPal API error: The order was refused')
       end
     end
 
@@ -568,6 +600,15 @@ RSpec.describe Spree::PaypalMerchant::Gateway::PaymentSessions do
       end
     end
 
+    # The SDK's error has a nil message when PayPal's body carries none.
+    context 'when PayPal refuses the capture with issue descriptions only' do
+      before { allow(orders_api).to receive(:capture_order).and_raise(paypal_error_without_message(422, 'The instrument presented was declined')) }
+
+      it "raises a gateway error with PayPal's description" do
+        expect { complete }.to raise_error(Spree::Core::GatewayError, 'PayPal API error: The instrument presented was declined')
+      end
+    end
+
     # PayPal can send these after it has captured, so the outcome is unknown:
     # the session must stay usable for a retry that reads the order again.
     [401, 408, 429, 500, 503].each do |status_code|
@@ -659,6 +700,36 @@ RSpec.describe Spree::PaypalMerchant::Gateway::PaymentSessions do
 
           expect(payment_session.reload).to be_pending
         end
+      end
+    end
+
+    # A 502 or 503 with an HTML body: the SDK cannot build its error, so it
+    # raises TypeError instead of an APIException. PayPal may have captured.
+    context 'when PayPal answers the capture with a server error that is not JSON' do
+      before { allow(orders_api).to receive(:capture_order).and_raise(unreadable_paypal_answer) }
+
+      it 'raises a gateway error and leaves the session pending' do
+        expect { complete }.to raise_error(Spree::Core::GatewayError, /could not be read/)
+
+        expect(payment_session.reload).to be_pending
+      end
+
+      it 'settles the capture on a retry once PayPal answers' do
+        expect { complete }.to raise_error(Spree::Core::GatewayError)
+        allow(orders_api).to receive(:get_order).and_return(paypal_response(captured))
+
+        gateway.complete_payment_session(payment_session: payment_session.reload)
+
+        expect([payment_session.reload.status, payments_on_cart.sole.completed?]).to eq(['completed', true])
+      end
+    end
+
+    # Through core's workflow, as the storefront's confirm call runs it.
+    context 'when the confirm workflow meets a server error that is not JSON' do
+      before { allow(orders_api).to receive(:capture_order).and_raise(unreadable_paypal_answer) }
+
+      it 'fails the workflow rather than raising' do
+        expect(Spree::PaymentSessions::Complete.call(payment_session: payment_session)).to be_failure
       end
     end
 
