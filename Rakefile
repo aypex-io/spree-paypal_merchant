@@ -23,5 +23,6 @@ task :test_app do
   # "#{LIB_NAME.camelize}::Generators::InstallGenerator".
   ENV['LIB_NAME'] = 'spree/paypal_merchant'
   ENV['DB'] ||= 'postgres'
-  Rake::Task['extension:test_app'].execute(install_storefront: true, install_admin: true)
+  # Spree 6's extension:test_app takes no install_storefront/install_admin options.
+  Rake::Task['extension:test_app'].execute
 end

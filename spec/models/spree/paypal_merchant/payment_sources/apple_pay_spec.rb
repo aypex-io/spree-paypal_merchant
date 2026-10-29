@@ -24,4 +24,30 @@ RSpec.describe Spree::PaypalMerchant::PaymentSources::ApplePay do
       expect(source.actions).to eq(%w[credit void])
     end
   end
+
+  describe 'metadata storage' do
+    it 'stores its attributes in metadata' do
+      payment_method = create(:paypal_merchant_gateway)
+      created = described_class.create!(
+        payment_method: payment_method,
+        gateway_payment_profile_id: 'APPLEPAY-TXN-1',
+        card_brand: 'VISA',
+        last_digits: '4242',
+        card_type: 'CREDIT',
+        name: 'Jane Apple',
+        email: 'jane@example.com'
+      )
+
+      reloaded = described_class.find(created.id)
+
+      expect(reloaded).to have_attributes(
+        card_brand: 'VISA',
+        last_digits: '4242',
+        card_type: 'CREDIT',
+        name: 'Jane Apple',
+        email: 'jane@example.com'
+      )
+      expect(reloaded.metadata).to include('card_brand' => 'VISA', 'email' => 'jane@example.com')
+    end
+  end
 end

@@ -7,7 +7,7 @@ Gem::Specification.new do |s|
   s.name        = 'spree-paypal_merchant'
   s.version     = Spree::PaypalMerchant::VERSION
   s.summary     = 'PayPal Checkout for Spree, including Apple Pay and Card Fields'
-  s.description = 'A Spree 5.6+ payment method for PayPal Checkout. Creates and ' \
+  s.description = 'A Spree 6.0+ payment method for PayPal Checkout. Creates and ' \
                   'captures PayPal Orders via payment sessions, pins the storefront ' \
                   'address, and records PayPal wallet, Apple Pay, and card sources.'
   s.required_ruby_version = '>= 3.3'
@@ -27,13 +27,16 @@ Gem::Specification.new do |s|
   s.files = Dir['{app,config,db,lib}/**/*', 'LICENSE', 'Rakefile', 'README.md', 'CHANGELOG.md']
   s.require_path = 'lib'
 
-  spree_opts = '>= 5.6.0'
+  # The gem rescues Faraday's errors and Net::HTTP::Persistent::Error, which the
+  # PayPal SDK's HTTP client raises. Both arrive through the SDK, so these
+  # follow its own ranges (faraday ~> 2.0, net-http-persistent >= 4.0.4, < 5).
+  s.add_dependency 'faraday', '~> 2.0'
+  s.add_dependency 'net-http-persistent', '~> 4.0'
   s.add_dependency 'paypal-server-sdk', '~> 2.3'
-  s.add_dependency 'spree', spree_opts
-  s.add_dependency 'spree_admin', spree_opts
+  s.add_dependency 'spree', '~> 6.0'
 
   s.add_development_dependency 'dotenv'
-  s.add_development_dependency 'spree_dev_tools'
+  s.add_development_dependency 'spree_dev_tools', '>= 1.0.0.beta2'
   s.add_development_dependency 'vcr'
   s.add_development_dependency 'webmock'
 end

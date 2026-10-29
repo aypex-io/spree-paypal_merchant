@@ -12,4 +12,9 @@ RSpec.describe 'payment method registration' do
   it 'registers the gateway once' do
     expect(registered.count(Spree::PaypalMerchant::Gateway)).to eq(1)
   end
+
+  it 'targets Spree 6' do
+    expect(Gem.loaded_specs['spree_core'].version).to be >= Gem::Version.new('6.0.0')
+    expect(defined?(Spree::Admin)).to be_nil
+  end
 end

@@ -7,7 +7,7 @@ module Spree
       # A PayPal wallet account captured as a Spree payment source.
       #
       class Paypal < ::Spree::PaymentSource
-        store_accessor :private_metadata, :email, :name, :account_status, :account_id
+        store_accessor :metadata, :email, :name, :account_status, :account_id
 
         ##
         # @return [Array<String>]

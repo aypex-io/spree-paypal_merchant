@@ -13,10 +13,23 @@ RSpec.describe RenameSpreePaypalPlatformToPaypalMerchant do
     ActiveRecord::Migration.suppress_messages { migration.new.migrate(direction) }
   end
 
+  # The model is gone but the table stays, so rows are written and read raw.
+  def insert_legacy_paypal_order(paypal_id)
+    connection.select_value(<<~SQL.squish)
+      INSERT INTO spree_paypal_merchant_orders (order_id, payment_method_id, paypal_id, amount, created_at, updated_at)
+      VALUES (#{order.id}, #{gateway.id}, #{connection.quote(paypal_id)}, 10.00, NOW(), NOW())
+      RETURNING id
+    SQL
+  end
+
+  def legacy_paypal_ids
+    connection.select_values('SELECT paypal_id FROM spree_paypal_merchant_orders')
+  end
+
   context 'when upgrading from spree-paypal_platform' do
-    let!(:paypal_order) { create(:paypal_merchant_order, order: order, payment_method: gateway) }
+    let!(:paypal_order_id) { insert_legacy_paypal_order('PAYPAL-ORDER-1') }
     let!(:source) { create(:paypal_merchant_payment_source, payment_method: gateway) }
-    let!(:session) { create(:paypal_merchant_payment_session, order: order, payment_method: gateway) }
+    let!(:session) { create(:paypal_merchant_payment_session, payment_method: gateway) }
 
     before do
       # Old class names no longer load, so they can only be written raw.
@@ -33,7 +46,7 @@ RSpec.describe RenameSpreePaypalPlatformToPaypalMerchant do
     end
 
     it 'keeps the PayPal order rows' do
-      expect(Spree::PaypalMerchant::Order.find(paypal_order.id).paypal_id).to eq(paypal_order.paypal_id)
+      expect(legacy_paypal_ids).to eq(['PAYPAL-ORDER-1'])
     end
 
     it 'drops the old table' do
@@ -64,12 +77,13 @@ RSpec.describe RenameSpreePaypalPlatformToPaypalMerchant do
   end
 
   context 'when installed fresh' do
-    let!(:paypal_order) { create(:paypal_merchant_order, order: order, payment_method: gateway) }
-
-    before { migrate(described_class, :up) }
+    before do
+      insert_legacy_paypal_order('PAYPAL-ORDER-1')
+      migrate(described_class, :up)
+    end
 
     it 'leaves the table alone' do
-      expect(Spree::PaypalMerchant::Order.find(paypal_order.id)).to eq(paypal_order)
+      expect(legacy_paypal_ids).to eq(['PAYPAL-ORDER-1'])
     end
   end
 end

@@ -7,7 +7,7 @@ module Spree
       # An Advanced Credit and Debit Card (Card Fields) payment.
       #
       class Card < ::Spree::PaymentSource
-        store_accessor :private_metadata,
+        store_accessor :metadata,
                        :card_brand,
                        :last_digits,
                        :card_type,

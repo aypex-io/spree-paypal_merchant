@@ -2,7 +2,8 @@
 
 FactoryBot.define do
   factory :paypal_merchant_gateway, class: 'Spree::PaypalMerchant::Gateway' do
-    name { 'PayPal Checkout' }
+    # Names are unique per store, and several gateways can share one store.
+    sequence(:name) { |n| "PayPal Checkout #{n}" }
     association :store, factory: :store
     preferences do
       {
@@ -28,10 +29,12 @@ FactoryBot.define do
   end
 
   factory :paypal_merchant_payment_session, class: 'Spree::PaymentSessions::PaypalMerchant' do
-    association :order, factory: :order
-    association :payment_method, factory: :paypal_merchant_gateway
-    amount { order.total }
-    currency { order.currency }
+    association :cart, factory: :cart_with_line_items
+    order { nil }
+    # A payment settles only through a method in its owner's store.
+    payment_method { association :paypal_merchant_gateway, store: (cart || order).store }
+    amount { (cart || order).total }
+    currency { (cart || order).currency }
     status { 'pending' }
     external_id { "PAYPAL-ORDER-#{SecureRandom.hex(8).upcase}" }
     external_data do
@@ -43,18 +46,6 @@ FactoryBot.define do
       external_data do
         JSON.parse(File.read(Spree::PaypalMerchant::Engine.root.join('spec/fixtures/captured_paypal_order.json')))
       end
-    end
-  end
-
-  factory :paypal_merchant_order, class: 'Spree::PaypalMerchant::Order' do
-    paypal_id { 'PAY-ORDER-ID' }
-    order { create(:order) }
-    payment_method { create(:paypal_merchant_gateway) }
-    amount { order.total }
-    data { JSON.parse(File.read(Spree::PaypalMerchant::Engine.root.join('spec/fixtures/paypal_order.json'))) }
-
-    factory :captured_paypal_merchant_order do
-      data { JSON.parse(File.read(Spree::PaypalMerchant::Engine.root.join('spec/fixtures/captured_paypal_order.json'))) }
     end
   end
 end

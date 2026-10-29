@@ -5,15 +5,44 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  # Weekly, so a new Spree release is tested even when nothing is pushed
+  # ("latest" in the matrix resolves fresh on every run).
+  schedule:
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
 
+# Keyed by event too, so the weekly or a manual run on main never cancels a
+# push run on main, or the other way round.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  tests:
-    name: Tests
+  # Its own check, so a style offense never fails or hides the required
+  # "Tests" check below.
+  lint:
+    name: RuboCop
     runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: '4.0'
+          bundler-cache: true
+      - name: Run RuboCop
+        run: bundle exec rubocop
+
+  tests:
+    # The oldest Spree the gemspec supports and the newest release it allows,
+    # each on the oldest supported Ruby and the current one. Gemfile.lock is
+    # not committed, so "latest" resolves fresh on every run.
+    name: Tests (Spree ${{ matrix.spree || 'latest' }}, Ruby ${{ matrix.ruby }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        spree: ['6.0.0', '']
+        ruby: ['3.3', '4.0']
     services:
       postgres:
         image: postgres:16
@@ -31,15 +60,34 @@ jobs:
       DATABASE_URL: postgres://postgres:password@localhost:5432/spree_test
       RAILS_ENV: test
       CI: true
+      SPREE_VERSION: ${{ matrix.spree }}
     steps:
       - uses: actions/checkout@v6
       - uses: ruby/setup-ruby@v1
         with:
-          ruby-version: '3.3'
+          ruby-version: ${{ matrix.ruby }}
           bundler-cache: true
+      - name: Show resolved versions
+        # Block scalar: in a plain one-line value YAML reads " #" as a comment.
+        run: |
+          bundle exec ruby -e 'puts "Ruby #{RUBY_VERSION}"; %w[spree spree_core rails].each { |g| puts "#{g} #{Gem.loaded_specs[g]&.version}" }'
       - name: Install libvips
         run: sudo apt-get update && sudo apt-get install -y libvips
       - name: Create test app
         run: bundle exec rake test_app
       - name: Run specs
         run: bundle exec rspec --format progress
+
+  # The single check branch protection requires, so the matrix can change
+  # without editing the protection rule. always(): a skipped required check
+  # counts as passed, so this must run and fail when anything above fails.
+  tests-passed:
+    name: Tests
+    if: always()
+    needs: [tests]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require every matrix job to pass
+        run: |
+          echo "tests: ${{ needs.tests.result }}"
+          test "${{ needs.tests.result }}" = success
