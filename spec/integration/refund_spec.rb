@@ -251,8 +251,37 @@ RSpec.describe 'PayPal refunds and cancellation through Spree workflows' do
     end
   end
 
-  describe 'canceling a payment that was never captured' do
+  # PayPal may still complete it. Voiding it in Spree would leave the money
+  # captured against a payment that can no longer complete or be refunded.
+  describe 'canceling a payment PayPal is still processing' do
     let(:status) { 'pending' }
+
+    it 'raises, saying PayPal is still processing it and to refund it once it completes' do
+      expect { payment.cancel! }
+        .to raise_error(Spree::Core::GatewayError, 'PayPal is still processing this payment; refund it once PayPal completes it.')
+    end
+
+    it 'leaves the payment pending, not failed or void' do
+      expect { payment.cancel! }.to raise_error(Spree::Core::GatewayError)
+
+      expect(payment.reload).to be_pending
+    end
+
+    it 'does not call PayPal' do
+      expect { payment.cancel! }.to raise_error(Spree::Core::GatewayError)
+
+      expect(payments_api).not_to have_received(:refund_captured_payment)
+    end
+
+    it 'keeps the PayPal order id as the payment response code' do
+      expect { payment.cancel! }.to raise_error(Spree::Core::GatewayError)
+
+      expect(payment.reload.response_code).to eq('ORDER-1')
+    end
+  end
+
+  describe 'canceling a payment that holds no money' do
+    let(:status) { 'failed' }
 
     it 'voids it without calling PayPal' do
       payment.cancel!
@@ -269,7 +298,6 @@ RSpec.describe 'PayPal refunds and cancellation through Spree workflows' do
   end
 
   describe 'voiding a payment' do
-    let(:status) { 'completed' }
     let(:result) { Spree.payment_void_workflow.call(payment: payment) }
 
     it 'fails, telling the merchant to refund instead' do

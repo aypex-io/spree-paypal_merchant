@@ -586,7 +586,7 @@ RSpec.describe Spree::PaypalMerchant::Gateway::PaymentSessions do
       end
     end
 
-    [Faraday::TimeoutError, Faraday::ConnectionFailed].each do |transport_error|
+    [Faraday::TimeoutError, Faraday::ConnectionFailed, Faraday::SSLError, Net::HTTP::Persistent::Error].each do |transport_error|
       context "when the capture gets no answer (#{transport_error})" do
         before { allow(orders_api).to receive(:capture_order).and_raise(transport_error) }
 

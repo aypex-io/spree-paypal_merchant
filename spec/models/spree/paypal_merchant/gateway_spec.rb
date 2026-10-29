@@ -332,7 +332,7 @@ RSpec.describe Spree::PaypalMerchant::Gateway do
       let(:still_processing) { 'PayPal is still processing this payment; refund it once PayPal completes it.' }
       let(:captured) { 'PayPal payments are captured at checkout; refund the payment instead.' }
 
-      %w[pending processing].each do |unfinished|
+      %w[checkout pending processing].each do |unfinished|
         context "when it is #{unfinished}" do
           let(:status) { unfinished }
 
@@ -374,9 +374,9 @@ RSpec.describe Spree::PaypalMerchant::Gateway do
   describe '#credit' do
     let(:payments_api) { instance_double(PaypalServerSdk::PaymentsController, refund_captured_payment: paypal_refund) }
     let(:refund_status) { 'COMPLETED' }
+    let(:refund_json) { { 'id' => 'REFUND-456', 'status' => refund_status, 'status_details' => { 'reason' => 'ECHECK' } } }
     let(:paypal_refund) do
-      refund_data = instance_double(PaypalServerSdk::Refund, id: 'REFUND-456', status: refund_status,
-                                                             as_json: { 'id' => 'REFUND-456', 'status' => refund_status })
+      refund_data = instance_double(PaypalServerSdk::Refund, id: 'REFUND-456', status: refund_status, as_json: refund_json)
       instance_double(PaypalServerSdk::ApiResponse, data: refund_data)
     end
     let(:metadata) { { 'paypal_capture_id' => 'CAP-1' } }
@@ -468,6 +468,24 @@ RSpec.describe Spree::PaypalMerchant::Gateway do
         it 'does not tell the merchant to check PayPal' do
           expect(gateway.credit(money, nil, 'ORDER-1', options).message).not_to match(/did not confirm/i)
         end
+
+        # Spree logs the response when it refuses a refund.
+        it "carries PayPal's refund in the params, for the log" do
+          params = gateway.credit(money, nil, 'ORDER-1', options).params
+
+          expect(params).to include('id' => 'REFUND-456', 'status' => status, 'status_details' => { 'reason' => 'ECHECK' })
+        end
+
+        # Spree reads params['message'] before the message, so it must be ours.
+        context 'when the refund JSON has a message of its own' do
+          let(:refund_json) { { 'id' => 'REFUND-456', 'status' => status, 'message' => 'something else' } }
+
+          it 'still reports the message above' do
+            response = gateway.credit(money, nil, 'ORDER-1', options)
+
+            expect(response.params['message']).to eq("PayPal did not issue the refund (status #{status}).")
+          end
+        end
       end
     end
 
@@ -541,20 +559,21 @@ RSpec.describe Spree::PaypalMerchant::Gateway do
       end
     end
 
+    # Named as well as listed below, so dropping one from the list fails here.
+    [Faraday::SSLError, Net::HTTP::Persistent::Error].each do |transport_error|
+      context "when the connection fails with #{transport_error}" do
+        before { allow(payments_api).to receive(:refund_captured_payment).and_raise(transport_error) }
+
+        it_behaves_like 'a refund PayPal did not confirm'
+      end
+    end
+
     Spree::PaypalMerchant::Gateway::CONNECTION_ERRORS.each do |error_class|
       context "when the request fails with #{error_class}" do
         before { allow(payments_api).to receive(:refund_captured_payment).and_raise(error_class) }
 
         it_behaves_like 'a refund PayPal did not confirm'
       end
-    end
-
-    # Spree::Refund turns a failed response into the error it shows the admin.
-    it "is reported to the admin as the refund's error" do
-      allow(payments_api).to receive(:refund_captured_payment).and_raise(paypal_error(503))
-      response = gateway.credit(money, nil, 'ORDER-1', options)
-
-      expect(response.params['message'] || response.message).to match(/PayPal did not confirm the refund/)
     end
   end
 
@@ -641,9 +660,36 @@ RSpec.describe Spree::PaypalMerchant::Gateway do
       end
     end
 
-    %w[pending processing checkout].each do |incomplete_status|
-      context "when the payment is #{incomplete_status}" do
-        let(:status) { incomplete_status }
+    # PayPal may still complete these, so they are never voided in Spree: that
+    # would leave the money captured with no payment to refund. It raises
+    # rather than failing, because a failed response would mark the payment
+    # failed.
+    %w[checkout pending processing].each do |unfinished_status|
+      context "when the payment is #{unfinished_status}" do
+        let(:status) { unfinished_status }
+
+        it 'raises, saying PayPal is still processing it and to refund it once it completes' do
+          expect { gateway.cancel(payment.response_code, payment) }
+            .to raise_error(Spree::Core::GatewayError, 'PayPal is still processing this payment; refund it once PayPal completes it.')
+        end
+
+        it 'raises even when asked not to refund' do
+          expect { gateway.cancel(payment.response_code, payment, refund: false) }.to raise_error(Spree::Core::GatewayError, /still processing/)
+        end
+
+        it 'does not refund or call PayPal' do
+          expect { gateway.cancel(payment.response_code, payment) }.to raise_error(Spree::Core::GatewayError)
+
+          expect(Spree.refund_create_workflow).not_to have_received(:call)
+          expect(gateway).not_to have_received(:client)
+        end
+      end
+    end
+
+    # These hold no money, so there is nothing to wait for or to refund.
+    %w[failed void invalid].each do |dead_status|
+      context "when the payment is #{dead_status}" do
+        let(:status) { dead_status }
 
         it 'succeeds without calling PayPal' do
           expect(gateway.cancel(payment.response_code, payment)).to be_success

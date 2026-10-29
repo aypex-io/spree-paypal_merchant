@@ -2,6 +2,7 @@
 
 require 'faraday'
 require 'net/http'
+require 'net/http/persistent'
 
 module Spree
   module PaypalMerchant
@@ -16,10 +17,12 @@ module Spree
       ##
       # PayPal could not be reached, or did not answer in time: the request
       # may or may not have arrived. The SDK's HTTP client raises the Faraday
-      # errors; this gateway's own HTTP calls raise the Net ones.
+      # errors (a failed TLS handshake is Faraday::SSLError, and its connection
+      # pool can pass its own error through); this gateway's own HTTP calls
+      # raise the Net ones.
       #
       CONNECTION_ERRORS = [
-        Faraday::TimeoutError, Faraday::ConnectionFailed,
+        Faraday::TimeoutError, Faraday::ConnectionFailed, Faraday::SSLError, Net::HTTP::Persistent::Error,
         Net::OpenTimeout, Net::ReadTimeout, SocketError, Errno::ECONNREFUSED
       ].freeze
 
@@ -45,6 +48,12 @@ module Spree
       # refund is on its way to the buyer, and is recorded.
       #
       FAILED_REFUND_STATUSES = %w[FAILED CANCELLED].freeze
+
+      ##
+      # What a merchant is told when they cancel or void a payment that PayPal
+      # may still complete (a pending capture).
+      #
+      STILL_PROCESSING_MESSAGE = 'PayPal is still processing this payment; refund it once PayPal completes it.'
 
       include PaymentSessions
 
@@ -186,7 +195,7 @@ module Spree
       # PayPal payments are captured at checkout, so there is never an
       # authorization to void: a payment that holds money is refunded instead.
       #
-      # This fails for every payment, including one PayPal is still processing
+      # This fails for every payment, including one PayPal may still complete
       # (a pending capture). Voiding that in Spree would leave the money
       # captured, with no payment to refund, if PayPal then completes it. The
       # message differs for that payment, telling the merchant to wait for it.
@@ -200,7 +209,7 @@ module Spree
       #
       def void(_response_code, _source = nil, options = {})
         if payment_still_processing?(options)
-          failure('PayPal is still processing this payment; refund it once PayPal completes it.')
+          failure(STILL_PROCESSING_MESSAGE)
         else
           failure('PayPal payments are captured at checkout; refund the payment instead.')
         end
@@ -213,8 +222,7 @@ module Spree
       # fails with PayPal's reason. A refund PayPal never confirmed,
       # because it answered with a server error or the request timed out,
       # fails with a message to check PayPal first: PayPal may have issued it,
-      # and issuing it again would pay the buyer twice. The refund request is
-      # sent once; the SDK never resends a POST.
+      # and issuing it again would pay the buyer twice.
       #
       # It returns a failure rather than raising. Spree::Refund raises a
       # GatewayError with the failure's message, which the refund workflow
@@ -238,7 +246,7 @@ module Spree
         )
 
         refund = response.data
-        return failure("PayPal did not issue the refund (status #{refund.status}).") if FAILED_REFUND_STATUSES.include?(refund.status.to_s)
+        return unissued_refund(refund) if FAILED_REFUND_STATUSES.include?(refund.status.to_s)
 
         success(refund.id, refund.as_json)
       rescue PaypalServerSdk::APIException => e
@@ -260,14 +268,23 @@ module Spree
       # response carries no authorization, so Spree keeps the payment's
       # response code, the PayPal order id.
       #
+      # A payment PayPal may still complete (checkout, pending or processing)
+      # is not settled: Spree would void it, and PayPal could then complete it,
+      # leaving captured money against a payment that cannot be refunded. It
+      # raises instead, as a failed response would mark the payment failed. A
+      # failed, voided or invalid payment holds nothing and succeeds.
+      #
       # @param _response_code [String]
       # @param payment [Spree::Payment, NilClass]
       # @param refund [TrueClass, FalseClass] whether captured money may be
       #   returned
       # @return [Spree::PaymentResponse]
-      # @raise [Spree::Core::GatewayError] when the refund fails
+      # @raise [Spree::Core::GatewayError] when PayPal may still complete the
+      #   payment, or the refund fails
       #
       def cancel(_response_code, payment = nil, refund: true)
+        raise Spree::Core::GatewayError, STILL_PROCESSING_MESSAGE if payment&.can_complete?
+
         refund_in_full(payment) if refund && payment&.completed? && !payment.credit_allowed.zero?
 
         success(nil, {})
@@ -291,14 +308,14 @@ module Spree
         raise Spree::Core::GatewayError, "PayPal connection error: #{e.message}"
       end
 
-      # Whether Spree's void is for a payment of this gateway that is not
-      # finished: PayPal may still complete it.
+      # Whether Spree's void is for a payment of this gateway that PayPal may
+      # still complete: one that is in checkout, pending or processing.
       def payment_still_processing?(options)
         prefixed_id = options.to_h[:payment_prefixed_id]
         return false if prefixed_id.blank?
 
         payment = Spree::Payment.where(payment_method_id: id).find_by_prefix_id(prefixed_id) # rubocop:disable Rails/DynamicFindBy
-        payment.present? && (payment.pending? || payment.processing?)
+        payment.present? && payment.can_complete?
       end
 
       def refund_in_full(payment)
@@ -318,10 +335,25 @@ module Spree
         recorded.presence || response_code
       end
 
+      # PayPal's message, and the description of each issue it lists.
       def paypal_error_text(error)
-        details = error.respond_to?(:details) && error.details.is_a?(Array) ? error.details.filter_map { |detail| detail.try(:description) } : []
+        [error.message, *paypal_issue_descriptions(error)].map(&:to_s).compact_blank.uniq.join(' ')
+      end
 
-        [error.message, *details].map(&:to_s).compact_blank.uniq.join(' ')
+      def paypal_issue_descriptions(error)
+        details = error.try(:details)
+        return [] unless details.is_a?(Array)
+
+        details.filter_map { |detail| detail.try(:description) }
+      end
+
+      # The failure for a refund PayPal accepted and reports it did not make.
+      # Spree reads params['message'] before the message, so the refund's own
+      # JSON is passed for the log with the message set over it.
+      def unissued_refund(refund)
+        message = "PayPal did not issue the refund (status #{refund.status})."
+
+        failure(message, refund.as_json.merge('message' => message))
       end
 
       def unconfirmed_refund(reason)
