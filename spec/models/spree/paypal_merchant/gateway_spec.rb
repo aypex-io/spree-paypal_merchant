@@ -320,6 +320,40 @@ RSpec.describe Spree::PaypalMerchant::Gateway do
   end
 
   describe '#client logging' do
+    let(:paypal_api) { 'https://api-m.sandbox.paypal.com' }
+    let(:json_headers) { { 'Content-Type' => 'application/json' } }
+    let(:rails_log) { StringIO.new }
+
+    before do
+      stub_request(:post, "#{paypal_api}/v1/oauth2/token")
+        .to_return(status: 200, headers: json_headers, body: { access_token: 'token', token_type: 'Bearer', expires_in: 32_400 }.to_json)
+      stub_request(:get, "#{paypal_api}/v2/checkout/orders/ORDER-1")
+        .to_return(status: 200, headers: json_headers, body: { id: 'ORDER-1', status: 'APPROVED' }.to_json)
+    end
+
+    # The SDK's default logger writes to standard output at whatever level it
+    # is given, which in production meant a WARN line per PayPal request.
+    it 'writes nothing to standard output' do
+      expect { gateway.fetch_paypal_order('ORDER-1') }.not_to output.to_stdout
+    end
+
+    it 'sends each request and response line to the Rails log at debug' do
+      allow(Rails).to receive(:logger).and_return(Logger.new(rails_log, level: Logger::DEBUG))
+
+      gateway.fetch_paypal_order('ORDER-1')
+
+      expect(rails_log.string).to include("DEBUG -- : [spree-paypal_merchant] Request GET #{paypal_api}/v2/checkout/orders/ORDER-1")
+        .and include('DEBUG -- : [spree-paypal_merchant] Response 200')
+    end
+
+    it 'logs nothing for PayPal requests at the info level production uses' do
+      allow(Rails).to receive(:logger).and_return(Logger.new(rails_log, level: Logger::INFO))
+
+      gateway.fetch_paypal_order('ORDER-1')
+
+      expect(rails_log.string).not_to include('[spree-paypal_merchant]')
+    end
+
     it 'does not log PayPal request bodies' do
       allow(PaypalServerSdk::RequestLoggingConfiguration).to receive(:new).and_call_original
 
