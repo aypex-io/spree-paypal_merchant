@@ -89,7 +89,8 @@ ignored.
 | `PAYMENT.CAPTURE.COMPLETED` | Settles the payment as captured |
 | `PAYMENT.CAPTURE.PENDING` | Settles it as pending (an eCheck, say); `COMPLETED` completes it later |
 | `PAYMENT.CAPTURE.DENIED`, `PAYMENT.CAPTURE.DECLINED` | Fails the payment session if it is still open. A payment already left pending by `PAYMENT.CAPTURE.PENDING` stays pending (no money was taken); use Capture in the dashboard: it reads PayPal and fails the payment if PayPal denied the capture (or completes it if PayPal completed it) |
-| `PAYMENT.CAPTURE.REVERSED`, `PAYMENT.CAPTURE.REFUNDED` | Cancels the payment session if it is still open and the event names the PayPal order. A completed session and its payment are left as they are, so a refund or chargeback made in PayPal does not change the Spree payment |
+| `PAYMENT.CAPTURE.REFUNDED` | Records the refund on the Spree payment (see [Refunds made in PayPal](#refunds-made-in-paypal)). PayPal sends it for refunds made from Spree too; those are not recorded twice |
+| `PAYMENT.CAPTURE.REVERSED` | Cancels the payment session if it is still open and the event names the PayPal order. A completed session and its payment are left as they are, so a reversal made in PayPal (after a chargeback, say) does not change the Spree payment |
 
 ## In the dashboard
 
@@ -106,6 +107,31 @@ ignored.
 - **Void** always fails. A PayPal payment holds captured money, so refund it
   instead. One that PayPal is still processing can't be voided or canceled;
   refund it once PayPal completes it.
+
+## Refunds made in PayPal
+
+A refund made in PayPal's own dashboard is recorded in Spree, so the order
+stops showing as paid. When PayPal sends `PAYMENT.CAPTURE.REFUNDED`, the gem
+queues `Spree::PaypalMerchant::SyncRefundsJob` (on Spree's payment webhook
+queue, 30 seconds later) for the payment the refund is about. The job reads the
+payment's refunds from PayPal, not from the event, and records each `COMPLETED`
+one Spree doesn't have yet:
+
+- as a Spree refund for PayPal's amount, with the PayPal refund id as its
+  transaction id, so Spree never asks PayPal to refund it again. Its metadata
+  says it was recorded from PayPal. The order's payment state and totals update
+  as for a refund made in Spree.
+- with the store's **Return processing** refund reason, the one Spree's refund
+  workflow defaults to, or else the store's first reason by name, as the admin
+  API defaults. The gem never creates a reason: with none, nothing is recorded
+  and a warning is logged.
+
+Refunds made from Spree already carry their PayPal refund id, so they are never
+recorded twice, and the job runs again later while one is still waiting for
+PayPal's answer. Not recorded, and logged: a refund PayPal hasn't completed, one
+in another currency than the payment's, one for more than is left to refund,
+and any refund of a payment that isn't completed (one Spree voided, say).
+Payments taken on 5.x are synced too.
 
 ## Apple Pay
 

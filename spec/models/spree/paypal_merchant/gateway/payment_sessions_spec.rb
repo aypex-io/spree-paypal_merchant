@@ -933,6 +933,25 @@ RSpec.describe Spree::PaypalMerchant::Gateway::PaymentSessions do
         end.to raise_error(Spree::PaymentMethod::WebhookSignatureError, /Missing PayPal webhook headers/)
       end
 
+      context 'when the event is a refund' do
+        include ActiveJob::TestHelper
+
+        let(:event_type) { 'PAYMENT.CAPTURE.REFUNDED' }
+
+        before do
+          create(:payment, order: create(:completed_order_with_totals, store: store), payment_method: gateway, source: nil, skip_source_requirement: true,
+                           status: 'completed', response_code: paypal_order_id, metadata: { 'paypal_capture_id' => capture_id })
+        end
+
+        it 'checks the signature before syncing anything' do
+          expect do
+            gateway.parse_webhook_event(raw_body, {})
+          rescue Spree::PaymentMethod::WebhookSignatureError
+            nil
+          end.not_to have_enqueued_job
+        end
+      end
+
       it 'raises when PayPal reports an invalid signature' do
         stub_paypal_http(
           { 'access_token' => 'tok' },
@@ -992,8 +1011,7 @@ RSpec.describe Spree::PaypalMerchant::Gateway::PaymentSessions do
         'PAYMENT.CAPTURE.PENDING' => :authorized,
         'PAYMENT.CAPTURE.DENIED' => :failed,
         'PAYMENT.CAPTURE.DECLINED' => :failed,
-        'PAYMENT.CAPTURE.REVERSED' => :canceled,
-        'PAYMENT.CAPTURE.REFUNDED' => :canceled
+        'PAYMENT.CAPTURE.REVERSED' => :canceled
       }.each do |type, action|
         context "when the event is #{type}" do
           let(:event_type) { type }
@@ -1057,7 +1075,7 @@ RSpec.describe Spree::PaypalMerchant::Gateway::PaymentSessions do
           end
 
           it 'returns nil for every capture event' do
-            bodies = %w[PAYMENT.CAPTURE.PENDING PAYMENT.CAPTURE.DENIED PAYMENT.CAPTURE.REFUNDED].map do |type|
+            bodies = %w[PAYMENT.CAPTURE.PENDING PAYMENT.CAPTURE.DENIED PAYMENT.CAPTURE.REVERSED].map do |type|
               { event_type: type, resource: { 'id' => 'CAPTURE-456', 'supplementary_data' => { 'related_ids' => { 'order_id' => 'ORDER-123' } } } }.to_json
             end
 
@@ -1090,6 +1108,96 @@ RSpec.describe Spree::PaypalMerchant::Gateway::PaymentSessions do
 
         it 'still returns the action' do
           expect(gateway.parse_webhook_event(raw_body, {})).to include(action: :captured)
+        end
+      end
+
+      # A refund of a completed payment has no payment-session action. The
+      # gem syncs the payment's refunds from PayPal itself, and Spree, given
+      # nil, enqueues nothing and answers PayPal 200.
+      describe 'PAYMENT.CAPTURE.REFUNDED' do
+        include ActiveJob::TestHelper
+        include ActiveSupport::Testing::TimeHelpers
+
+        # The event's resource is the refund, which links up to its capture.
+        def refund_event(capture_id: 'CAPTURE-456', order_id: nil)
+          links = [{ 'href' => 'https://api.paypal.com/v2/payments/refunds/REFUND-789', 'rel' => 'self', 'method' => 'GET' }]
+          links << { 'href' => "https://api.paypal.com/v2/payments/captures/#{capture_id}", 'rel' => 'up', 'method' => 'GET' } if capture_id
+          resource = { 'id' => 'REFUND-789', 'status' => 'COMPLETED', 'amount' => { 'currency_code' => 'USD', 'value' => '10.00' }, 'links' => links }
+          resource['supplementary_data'] = { 'related_ids' => { 'order_id' => order_id } } if order_id
+
+          { id: 'WH-REFUND-1', event_type: 'PAYMENT.CAPTURE.REFUNDED', resource_type: 'refund', resource: resource }.to_json
+        end
+
+        def parse(body = refund_event)
+          gateway.parse_webhook_event(body, {})
+        end
+
+        let(:order) { create(:completed_order_with_totals, store: store) }
+        let(:payment_method) { gateway }
+        # Settled on Spree 6: the PayPal order id as response code, the capture id on the metadata.
+        let!(:payment) do
+          create(:payment, order: order, payment_method: payment_method, amount: order.total, status: 'completed', source: nil,
+                           skip_source_requirement: true, response_code: 'ORDER-123', metadata: { 'paypal_capture_id' => 'CAPTURE-456' })
+        end
+
+        it 'syncs the refunds of the payment that holds the capture, after the wait Spree gives payment webhooks' do
+          freeze_time do
+            expect { parse }.to have_enqueued_job(Spree::PaypalMerchant::SyncRefundsJob)
+              .with(payment_id: payment.id).on_queue(Spree.queues.payment_webhooks.to_s).at(30.seconds.from_now)
+          end
+        end
+
+        it 'returns nil, so Spree enqueues no payment-session action' do
+          expect(parse).to be_nil
+        end
+
+        it 'does not ask PayPal: the job reads the refunds' do
+          allow(gateway).to receive(:client)
+
+          parse
+
+          expect(gateway).not_to have_received(:client)
+        end
+
+        context 'when no payment holds the capture' do
+          it 'syncs nothing, and returns nil' do
+            result = nil
+
+            expect { result = parse(refund_event(capture_id: 'CAPTURE-UNKNOWN')) }.not_to have_enqueued_job
+            expect(result).to be_nil
+          end
+        end
+
+        context 'when the payment holding the capture belongs to another payment method' do
+          let(:payment_method) { create(:paypal_merchant_gateway, store: store) }
+
+          it 'syncs nothing' do
+            expect { parse }.not_to have_enqueued_job
+          end
+        end
+
+        context 'when the refund names neither capture nor order' do
+          it 'syncs nothing' do
+            expect { parse(refund_event(capture_id: nil)) }.not_to have_enqueued_job
+          end
+        end
+
+        context 'when the payment was taken on 5.x, keyed on the capture id' do
+          let!(:payment) do
+            create(:payment, order: order, payment_method: gateway, amount: order.total, status: 'completed', source: nil,
+                             skip_source_requirement: true, response_code: 'CAPTURE-456')
+          end
+
+          it 'syncs its refunds' do
+            expect { parse }.to have_enqueued_job(Spree::PaypalMerchant::SyncRefundsJob).with(payment_id: payment.id)
+          end
+        end
+
+        context 'when the refund names its PayPal order' do
+          it 'syncs the refunds of the payment for that order' do
+            expect { parse(refund_event(capture_id: nil, order_id: 'ORDER-123')) }
+              .to have_enqueued_job(Spree::PaypalMerchant::SyncRefundsJob).with(payment_id: payment.id)
+          end
         end
       end
     end
