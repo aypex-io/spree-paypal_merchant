@@ -13,16 +13,6 @@ module PaypalHttp
   #
   REFUND_REQUEST = %r{\A#{Regexp.escape(PAYPAL_API)}/v2/payments/captures/[^/]+/refund\z}
 
-  # The SDK writes a line per request to standard output when it has no
-  # logger of its own; these specs make real SDK requests.
-  def self.included(example_group)
-    example_group.before do
-      allow(PaypalServerSdk::LoggingConfiguration).to receive(:new).and_wrap_original do |original, **options|
-        original.call(**options, logger: Logger.new(IO::NULL))
-      end
-    end
-  end
-
   def paypal_fixture(name)
     JSON.parse(File.read(Spree::PaypalMerchant::Engine.root.join("spec/fixtures/#{name}.json")))
   end

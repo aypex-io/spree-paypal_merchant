@@ -271,8 +271,11 @@ module Spree
           timeout: REQUEST_TIMEOUT,
           max_retries: MAX_RETRIES,
           retry_methods: RETRY_METHODS,
+          # Request and response lines go to the Rails log at debug, so a
+          # production log at info leaves them out.
           logging_configuration: PaypalServerSdk::LoggingConfiguration.new(
-            log_level: Logger::WARN,
+            logger: Spree::PaypalMerchant::SdkLogger.new,
+            log_level: Logger::DEBUG,
             request_logging_config: PaypalServerSdk::RequestLoggingConfiguration.new(
               log_body: false
             ),

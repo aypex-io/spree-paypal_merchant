@@ -207,6 +207,13 @@ Three things to know before you cut over:
    id is now keyed by the cart's (or order's) prefixed id instead of the order
    number. Such a source isn't reused, and a new one is created.
 
+## Logging
+
+The PayPal SDK logs one line per request and one per response: the method, URL,
+status and content type, never bodies or headers. The gem sends these lines to
+the Rails log at `debug`, prefixed `[spree-paypal_merchant]`, so a production
+log at `info` leaves them out. To see them, set the log level to `debug`.
+
 ## Known limitations
 
 - PayPal treats HUF and TWD as zero-decimal currencies, but Spree formats them
