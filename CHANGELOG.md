@@ -1,5 +1,49 @@
 # Changelog
 
+## 6.0.1
+
+To record refunds made in PayPal, subscribe the webhook to
+`PAYMENT.CAPTURE.REFUNDED` (see "Refunds made in PayPal" in the README).
+
+### Added
+
+- Refunds made in PayPal's dashboard are recorded in Spree, so the order no
+  longer shows as paid. `PAYMENT.CAPTURE.REFUNDED` queues
+  `Spree::PaypalMerchant::SyncRefundsJob` for the payment it is about. The job
+  reads the payment's refunds from PayPal, not from the event, and records each
+  `COMPLETED` one Spree doesn't have: PayPal's amount, the PayPal refund id as
+  the transaction id, and the store's refund reason. The order's payment state
+  and totals update as for a refund made in Spree, and PayPal is never asked to
+  refund it again.
+  - Refunds made from Spree carry their PayPal refund id and are not recorded
+    twice. While one is still waiting for PayPal's answer, the job tries again
+    later.
+  - The reason is the store's "Return processing" reason, or else its first by
+    name. None is created: with no reason, nothing is recorded and a warning
+    is logged.
+  - A refund in another currency, or for more than is left to refund, is
+    logged and not recorded.
+  - Payments taken on 5.x are synced too.
+- `spree:paypal_merchant:sync_refunds[<order number>]` records the refunds made
+  in PayPal for one order, such as those made before the webhook was set up,
+  and prints what it recorded or skipped.
+- The payment method's card under Settings -> Integrations shows PayPal's mark
+  and links to the README. The mark ships with the gem
+  (`lib/spree/paypal_merchant/paypal-mark.svg`) and `Gateway.logo_url` serves
+  it as a data URI, so the dashboard needs no asset pipeline and fetches it
+  from no other host. The mark is PayPal's trademark, not covered by the gem's
+  license.
+
+### Fixed
+
+- `Gateway#webhook_url` is an absolute URL, `https://` in production. It had no
+  scheme, so PayPal would not take it. When the Spree API is on another host
+  than the store's URL, give PayPal the API host (see the README).
+- `PAYMENT.CAPTURE.REFUNDED` no longer maps to canceling the payment session.
+  Its resource is the refund, which names no PayPal order, so the event was
+  dropped; at most it could cancel a session still open, and a refund never
+  cancels one.
+
 ## 6.0.0
 
 Ports the gem to Spree 6. The major version tracks Spree's. Spree 5.6 stays

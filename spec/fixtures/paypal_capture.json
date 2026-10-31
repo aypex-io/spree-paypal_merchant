@@ -1,0 +1,34 @@
+{
+  "id": "3C679366HH908993F",
+  "status": "PARTIALLY_REFUNDED",
+  "amount": {
+    "currency_code": "USD",
+    "value": "100.00"
+  },
+  "final_capture": true,
+  "disbursement_mode": "INSTANT",
+  "supplementary_data": {
+    "related_ids": {
+      "order_id": "5O190127TN364715T"
+    }
+  },
+  "links": [
+    {
+      "href": "https://api.sandbox.paypal.com/v2/payments/captures/3C679366HH908993F",
+      "rel": "self",
+      "method": "GET"
+    },
+    {
+      "href": "https://api.sandbox.paypal.com/v2/payments/captures/3C679366HH908993F/refund",
+      "rel": "refund",
+      "method": "POST"
+    },
+    {
+      "href": "https://api.sandbox.paypal.com/v2/checkout/orders/5O190127TN364715T",
+      "rel": "up",
+      "method": "GET"
+    }
+  ],
+  "create_time": "2026-10-01T09:00:00Z",
+  "update_time": "2026-10-03T09:00:00Z"
+}

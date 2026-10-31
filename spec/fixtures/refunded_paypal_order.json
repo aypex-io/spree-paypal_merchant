@@ -1,0 +1,136 @@
+{
+  "id": "5O190127TN364715T",
+  "intent": "CAPTURE",
+  "status": "COMPLETED",
+  "purchase_units": [
+    {
+      "reference_id": "default",
+      "amount": {
+        "currency_code": "USD",
+        "value": "100.00"
+      },
+      "payments": {
+        "captures": [
+          {
+            "id": "3C679366HH908993F",
+            "status": "PARTIALLY_REFUNDED",
+            "amount": {
+              "currency_code": "USD",
+              "value": "100.00"
+            },
+            "final_capture": true,
+            "disbursement_mode": "INSTANT",
+            "links": [
+              {
+                "href": "https://api.sandbox.paypal.com/v2/payments/captures/3C679366HH908993F",
+                "rel": "self",
+                "method": "GET"
+              },
+              {
+                "href": "https://api.sandbox.paypal.com/v2/payments/captures/3C679366HH908993F/refund",
+                "rel": "refund",
+                "method": "POST"
+              },
+              {
+                "href": "https://api.sandbox.paypal.com/v2/checkout/orders/5O190127TN364715T",
+                "rel": "up",
+                "method": "GET"
+              }
+            ],
+            "create_time": "2026-10-01T09:00:00Z",
+            "update_time": "2026-10-03T09:00:00Z"
+          }
+        ],
+        "refunds": [
+          {
+            "id": "1JU08902781691411",
+            "status": "COMPLETED",
+            "amount": {
+              "currency_code": "USD",
+              "value": "10.00"
+            },
+            "seller_payable_breakdown": {
+              "gross_amount": {
+                "currency_code": "USD",
+                "value": "10.00"
+              },
+              "paypal_fee": {
+                "currency_code": "USD",
+                "value": "0.00"
+              },
+              "net_amount": {
+                "currency_code": "USD",
+                "value": "10.00"
+              },
+              "total_refunded_amount": {
+                "currency_code": "USD",
+                "value": "10.00"
+              }
+            },
+            "links": [
+              {
+                "href": "https://api.sandbox.paypal.com/v2/payments/refunds/1JU08902781691411",
+                "rel": "self",
+                "method": "GET"
+              },
+              {
+                "href": "https://api.sandbox.paypal.com/v2/payments/captures/3C679366HH908993F",
+                "rel": "up",
+                "method": "GET"
+              }
+            ],
+            "create_time": "2026-10-02T09:00:00Z",
+            "update_time": "2026-10-02T09:00:00Z"
+          },
+          {
+            "id": "8MC585209K746392H",
+            "status": "COMPLETED",
+            "amount": {
+              "currency_code": "USD",
+              "value": "15.00"
+            },
+            "seller_payable_breakdown": {
+              "gross_amount": {
+                "currency_code": "USD",
+                "value": "15.00"
+              },
+              "paypal_fee": {
+                "currency_code": "USD",
+                "value": "0.00"
+              },
+              "net_amount": {
+                "currency_code": "USD",
+                "value": "15.00"
+              },
+              "total_refunded_amount": {
+                "currency_code": "USD",
+                "value": "25.00"
+              }
+            },
+            "links": [
+              {
+                "href": "https://api.sandbox.paypal.com/v2/payments/refunds/8MC585209K746392H",
+                "rel": "self",
+                "method": "GET"
+              },
+              {
+                "href": "https://api.sandbox.paypal.com/v2/payments/captures/3C679366HH908993F",
+                "rel": "up",
+                "method": "GET"
+              }
+            ],
+            "create_time": "2026-10-03T09:00:00Z",
+            "update_time": "2026-10-03T09:00:00Z"
+          }
+        ]
+      }
+    }
+  ],
+  "links": [
+    {
+      "href": "https://api.sandbox.paypal.com/v2/checkout/orders/5O190127TN364715T",
+      "rel": "self",
+      "method": "GET"
+    }
+  ]
+}

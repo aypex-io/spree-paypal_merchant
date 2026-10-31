@@ -41,14 +41,23 @@ module Spree
         # A pending capture settles as a payment that is not completed yet; the
         # COMPLETED event then completes that same payment.
         #
+        # A refund is not among them ({REFUND_EVENT}): it never cancels a
+        # session.
+        #
         WEBHOOK_ACTIONS = {
           'PAYMENT.CAPTURE.COMPLETED' => :captured,
           'PAYMENT.CAPTURE.PENDING' => :authorized,
           'PAYMENT.CAPTURE.DENIED' => :failed,
           'PAYMENT.CAPTURE.DECLINED' => :failed,
-          'PAYMENT.CAPTURE.REVERSED' => :canceled,
-          'PAYMENT.CAPTURE.REFUNDED' => :canceled
+          'PAYMENT.CAPTURE.REVERSED' => :canceled
         }.freeze
+
+        ##
+        # The event PayPal sends for a refund of a capture, however it was
+        # made. Its resource is the refund, which links up to its capture.
+        # The gem records the refund itself ({SyncRefundsJob}).
+        #
+        REFUND_EVENT = 'PAYMENT.CAPTURE.REFUNDED'
 
         ##
         # @return [TrueClass, FalseClass]
@@ -227,13 +236,36 @@ module Spree
         end
 
         ##
-        # Reads a PayPal order, including its captures.
+        # Reads a PayPal order, including its captures and refunds.
         #
         # @param paypal_order_id [String]
         # @return [PaypalServerSdk::ApiResponse]
         #
         def fetch_paypal_order(paypal_order_id)
           client.orders.get_order('id' => paypal_order_id, 'prefer' => 'return=representation')
+        end
+
+        ##
+        # Reads a PayPal capture, which names its order.
+        #
+        # @param capture_id [String]
+        # @return [PaypalServerSdk::ApiResponse]
+        #
+        def fetch_paypal_capture(capture_id)
+          client.payments.get_captured_payment('capture_id' => capture_id)
+        end
+
+        ##
+        # Whether PayPal definitely refused the request. A server error, or a
+        # client error in {AMBIGUOUS_CLIENT_ERROR_STATUSES}, leaves the outcome
+        # unknown, and asking again later may succeed.
+        #
+        # @param error [PaypalServerSdk::APIException]
+        # @return [TrueClass, FalseClass]
+        #
+        def paypal_refusal?(error)
+          status = error.response_code.to_i
+          status.between?(400, 499) && AMBIGUOUS_CLIENT_ERROR_STATUSES.exclude?(status)
         end
 
         ##
@@ -244,6 +276,10 @@ module Spree
         # with this method, and for a session settled before Spree 6 (see
         # {#settled_before_spree_6?}).
         #
+        # A refund ({REFUND_EVENT}) also returns nil, once the signature has
+        # been checked: the gem enqueues {SyncRefundsJob} for the payment of
+        # this method the refund is about, if it knows one.
+        #
         # @param raw_body [String]
         # @param headers [Hash]
         # @return [Hash, NilClass]
@@ -253,10 +289,12 @@ module Spree
           verify_webhook_signature!(raw_body, headers)
 
           event = JSON.parse(raw_body).with_indifferent_access
+          resource = event[:resource] || {}
+          return sync_refunds_later(resource) if event[:event_type] == REFUND_EVENT
+
           action = WEBHOOK_ACTIONS[event[:event_type]]
           return nil unless action
 
-          resource = event[:resource] || {}
           paypal_order_id = resource.dig('supplementary_data', 'related_ids', 'order_id')
           return nil unless paypal_order_id
 
@@ -270,6 +308,66 @@ module Spree
         end
 
         private
+
+        ##
+        # Enqueues {SyncRefundsJob} for the payment a PayPal refund is about.
+        # The refund only names the payment: the job reads its refunds from
+        # PayPal.
+        #
+        # @param refund [Hash] the event's resource, a PayPal refund
+        # @return [NilClass] so Spree enqueues no payment-session action
+        #
+        def sync_refunds_later(refund)
+          payment = payment_for_paypal_refund(refund)
+          SyncRefundsJob.set(wait: SyncRefundsJob::WAIT).perform_later(payment_id: payment.id) if payment
+
+          nil
+        end
+
+        ##
+        # The payment of this method a PayPal refund is about. The refund links
+        # up to its capture, and may name its order. A payment settled on Spree
+        # 6 holds the PayPal order id as its response code and the capture id
+        # on its metadata; one taken on 5.x holds the capture id as its
+        # response code.
+        #
+        # Response codes are searched first. The metadata is searched only
+        # when none matches: its expression has no index, so it reads every
+        # payment of the method.
+        #
+        # @param refund [Hash] a PayPal refund, as JSON
+        # @return [Spree::Payment, NilClass]
+        #
+        def payment_for_paypal_refund(refund)
+          related_ids = refund.dig('supplementary_data', 'related_ids') || {}
+          capture_id = PaypalMerchant.linked_id(refund['links'], rel: 'up', path: 'v2/payments/captures').presence ||
+                       related_ids['capture_id'].presence
+          response_codes = [related_ids['order_id'].presence, capture_id].compact
+          return if response_codes.empty?
+
+          payments = Spree::Payment.where(payment_method_id: id).order(:id)
+          payment = payments.find_by(response_code: response_codes)
+          return payment if payment || capture_id.nil?
+
+          payments.find_by(recorded_capture_id_sql, capture_id)
+        end
+
+        ##
+        # Matches the capture id Spree 6 settlement records on a payment's
+        # metadata, which is jsonb on PostgreSQL and json elsewhere. The
+        # expressions are the ones Spree's own metadata specs use.
+        #
+        # @return [String] SQL with one bind for the capture id
+        #
+        def recorded_capture_id_sql
+          column = "#{Spree::Payment.quoted_table_name}.#{Spree::Payment.connection.quote_column_name('metadata')}"
+
+          if Spree::Payment.connection.adapter_name.match?(/postg/i)
+            "#{column}->>'paypal_capture_id' = ?"
+          else
+            "JSON_EXTRACT(#{column}, '$.paypal_capture_id') = ?"
+          end
+        end
 
         ##
         # PayPal captures at checkout. Only this method's own capture method
@@ -331,19 +429,6 @@ module Spree
           raise unless paypal_issue?(e, 'ORDER_ALREADY_CAPTURED')
 
           fetch_paypal_order(paypal_order_id)
-        end
-
-        ##
-        # Whether PayPal definitely refused the request. A server error, or a
-        # client error in {AMBIGUOUS_CLIENT_ERROR_STATUSES}, leaves the outcome
-        # unknown.
-        #
-        # @param error [PaypalServerSdk::APIException]
-        # @return [TrueClass, FalseClass]
-        #
-        def paypal_refusal?(error)
-          status = error.response_code.to_i
-          status.between?(400, 499) && AMBIGUOUS_CLIENT_ERROR_STATUSES.exclude?(status)
         end
 
         ##
