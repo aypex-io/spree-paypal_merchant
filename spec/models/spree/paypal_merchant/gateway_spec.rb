@@ -85,6 +85,78 @@ RSpec.describe Spree::PaypalMerchant::Gateway do
     expect(own_methods).to include(:authorize, :purchase, :capture)
   end
 
+  # The dashboard lists third-party payment methods under Settings ->
+  # Integrations as cards, with a letter avatar when there is no logo.
+  describe '.provider_listing' do
+    it 'shows the PayPal logo, links to the setup guide, and lists PayPal as third-party' do
+      expect(described_class.provider_listing).to eq(
+        logo_url: described_class.logo_url,
+        docs_url: 'https://github.com/aypex-io/spree-paypal_merchant#readme',
+        third_party: true
+      )
+    end
+  end
+
+  # Shipped with the gem, so the dashboard needs no asset pipeline and asks no
+  # other host for it.
+  describe '.logo_url' do
+    let(:logo_path) { Spree::PaypalMerchant::Engine.root.join('lib/spree/paypal_merchant/paypal-mark.svg') }
+    let(:prefix) { 'data:image/svg+xml;base64,' }
+
+    it 'is an SVG data URI' do
+      expect(described_class.logo_url).to start_with(prefix)
+    end
+
+    it "decodes to the bundled PayPal mark's exact bytes" do
+      expect(described_class.logo_url.delete_prefix(prefix).unpack1('m0')).to eq(File.binread(logo_path))
+    end
+
+    it 'is built once, and frozen' do
+      expect(described_class.logo_url).to be_frozen.and be_equal(described_class.logo_url)
+    end
+
+    it 'ships the mark in the gem' do
+      gemspec = Bundler.load_gemspec(Spree::PaypalMerchant::Engine.root.join('spree-paypal_merchant.gemspec'))
+
+      expect(gemspec.files).to include('lib/spree/paypal_merchant/paypal-mark.svg')
+    end
+  end
+
+  describe '#webhook_url' do
+    let(:store) { create(:store, url: store_url) }
+    let(:store_url) { 'shop.example.com' }
+    let(:path) { "/api/v3/webhooks/payments/#{gateway.prefixed_id}" }
+
+    # PayPal only accepts an absolute https URL. The store is read afresh, as
+    # it remembers its formatted URL once built.
+    context 'in production' do
+      before do
+        gateway.reload
+        allow(Rails).to receive(:env).and_return(ActiveSupport::EnvironmentInquirer.new('production'))
+      end
+
+      it "is an absolute https URL on the store's host" do
+        expect(gateway.webhook_url).to eq("https://shop.example.com#{path}")
+      end
+
+      context 'when the store URL names another scheme and a port' do
+        let(:store_url) { 'http://shop.example.com:8080' }
+
+        it 'is still https, on the bare host' do
+          expect(gateway.webhook_url).to eq("https://shop.example.com#{path}")
+        end
+      end
+    end
+
+    it 'is absolute in development and test too' do
+      expect(gateway.webhook_url).to start_with('http://shop.example.com').and end_with(path)
+    end
+
+    it 'is nil without a store' do
+      expect(described_class.new.webhook_url).to be_nil
+    end
+  end
+
   # PayPal captures at checkout. A store default must not make Spree treat a
   # pending PayPal payment as one it captures on dispatch or leaves to staff.
   describe '#resolved_capture_method' do

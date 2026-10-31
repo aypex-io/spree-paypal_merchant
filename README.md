@@ -66,10 +66,19 @@ Then add a **PayPal** payment method in the admin dashboard and set:
 | `enable_apple_pay` | Offer Apple Pay on the storefront (default on) |
 | `enable_card_fields` | Offer Card Fields on the storefront (default on) |
 
-Webhook URL is the standard Spree v3 payments webhook:
+Webhook URL is the standard Spree v3 payments webhook. PayPal only accepts an
+absolute `https://` URL:
 
 ```text
 https://<store>/api/v3/webhooks/payments/<prefixed-payment-method-id>
+```
+
+The gateway's `webhook_url` builds it from the store's URL. When the Spree API
+is served from another host than the store's URL (a headless storefront on its
+own domain, say), give PayPal the **API host** instead:
+
+```text
+https://<api host>/api/v3/webhooks/payments/<prefixed-payment-method-id>
 ```
 
 Subscribe it to these events. Others, such as `CHECKOUT.ORDER.APPROVED`, are
@@ -185,3 +194,7 @@ runs Spree 6.0.0 and the newest release, each on Ruby 3.3 and 4.0.
 
 MIT. Derived from [spree/spree_paypal_checkout](https://github.com/spree/spree_paypal_checkout)
 (Vendo Connect Inc.), re-namespaced and extended by Aypex.
+
+The PayPal mark (`lib/spree/paypal_merchant/paypal-mark.svg`) is PayPal's
+trademark, included only to identify the payment method in the Spree
+dashboard, and is not covered by this gem's license.

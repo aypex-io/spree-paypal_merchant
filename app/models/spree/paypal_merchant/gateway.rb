@@ -114,6 +114,36 @@ module Spree
       validates :preferred_client_id, :preferred_client_secret, presence: true
 
       ##
+      # PayPal's mark (a square SVG, as PayPal publishes it), shipped with the
+      # gem and read once into a data URI. The dashboard then needs no asset
+      # pipeline, and fetches the logo from no other host.
+      #
+      LOGO_PATH = File.expand_path('../../../../lib/spree/paypal_merchant/paypal-mark.svg', __dir__)
+
+      ##
+      # @see LOGO_PATH
+      #
+      LOGO_DATA_URI = "data:image/svg+xml;base64,#{[File.binread(LOGO_PATH)].pack('m0')}".freeze
+
+      ##
+      # The logo on this payment method's card under Settings -> Integrations.
+      #
+      # @return [String] {LOGO_DATA_URI}
+      #
+      def self.logo_url
+        LOGO_DATA_URI
+      end
+
+      ##
+      # The setup guide the card links to.
+      #
+      # @return [String]
+      #
+      def self.docs_url
+        'https://github.com/aypex-io/spree-paypal_merchant#readme'
+      end
+
+      ##
       # @return [Class]
       #
       def provider_class
@@ -194,12 +224,19 @@ module Spree
       end
 
       ##
-      # @return [String, NilClass]
+      # The URL to give PayPal for this method's webhooks, on the store's own
+      # host. It is absolute, and https in production, as PayPal requires.
+      #
+      # When the Spree API is served from another host than the store's URL
+      # (a headless storefront on its own domain, say), PayPal must be given
+      # the API host instead, with the same path.
+      #
+      # @return [String, NilClass] nil without a store
       #
       def webhook_url
         return nil unless store
 
-        "#{store.url_or_custom_domain}/api/v3/webhooks/payments/#{prefixed_id}"
+        "#{store.formatted_url}/api/v3/webhooks/payments/#{prefixed_id}"
       end
 
       ##
