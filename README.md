@@ -133,6 +133,14 @@ in another currency than the payment's, one for more than is left to refund,
 and any refund of a payment that isn't completed (one Spree voided, say).
 Payments taken on 5.x are synced too.
 
+For refunds made before the webhook was set up, or ones the job gave up on,
+run the same sync for one order's PayPal payments. It prints what it recorded
+or skipped, and running it again records nothing new:
+
+```bash
+bin/rails 'spree:paypal_merchant:sync_refunds[R123456789]'
+```
+
 ## Apple Pay
 
 1. Enable Apple Pay on the PayPal business account.
