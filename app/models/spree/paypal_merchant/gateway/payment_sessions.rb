@@ -227,13 +227,36 @@ module Spree
         end
 
         ##
-        # Reads a PayPal order, including its captures.
+        # Reads a PayPal order, including its captures and refunds.
         #
         # @param paypal_order_id [String]
         # @return [PaypalServerSdk::ApiResponse]
         #
         def fetch_paypal_order(paypal_order_id)
           client.orders.get_order('id' => paypal_order_id, 'prefer' => 'return=representation')
+        end
+
+        ##
+        # Reads a PayPal capture, which names its order.
+        #
+        # @param capture_id [String]
+        # @return [PaypalServerSdk::ApiResponse]
+        #
+        def fetch_paypal_capture(capture_id)
+          client.payments.get_captured_payment('capture_id' => capture_id)
+        end
+
+        ##
+        # Whether PayPal definitely refused the request. A server error, or a
+        # client error in {AMBIGUOUS_CLIENT_ERROR_STATUSES}, leaves the outcome
+        # unknown, and asking again later may succeed.
+        #
+        # @param error [PaypalServerSdk::APIException]
+        # @return [TrueClass, FalseClass]
+        #
+        def paypal_refusal?(error)
+          status = error.response_code.to_i
+          status.between?(400, 499) && AMBIGUOUS_CLIENT_ERROR_STATUSES.exclude?(status)
         end
 
         ##
@@ -331,19 +354,6 @@ module Spree
           raise unless paypal_issue?(e, 'ORDER_ALREADY_CAPTURED')
 
           fetch_paypal_order(paypal_order_id)
-        end
-
-        ##
-        # Whether PayPal definitely refused the request. A server error, or a
-        # client error in {AMBIGUOUS_CLIENT_ERROR_STATUSES}, leaves the outcome
-        # unknown.
-        #
-        # @param error [PaypalServerSdk::APIException]
-        # @return [TrueClass, FalseClass]
-        #
-        def paypal_refusal?(error)
-          status = error.response_code.to_i
-          status.between?(400, 499) && AMBIGUOUS_CLIENT_ERROR_STATUSES.exclude?(status)
         end
 
         ##
