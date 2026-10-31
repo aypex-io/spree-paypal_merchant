@@ -80,11 +80,7 @@ module Spree
       #   payment's order or capture
       #
       def call
-        why_not = why_payment_not_synced
-        if why_not
-          note(:warn, "PayPal refunds not synced for payment #{payment.number}: #{why_not}")
-          return result([])
-        end
+        return result([]) if payment_not_synced?
 
         paypal_refunds = read_paypal_refunds
         recorded = payment.with_lock { record(paypal_refunds) }
@@ -96,6 +92,15 @@ module Spree
       private
 
       attr_reader :payment, :gateway
+
+      # Whether the payment is not one to sync, noting why. Asked before
+      # PayPal is read, and again once the payment is locked and read afresh.
+      def payment_not_synced?
+        why_not = why_payment_not_synced
+        note(:warn, "PayPal refunds not synced for payment #{payment.number}: #{why_not}") if why_not
+
+        why_not.present?
+      end
 
       # As Spree's refund workflow: only a completed payment is refunded, and
       # a payment shared by a split checkout needs to be told which order a
@@ -109,8 +114,12 @@ module Spree
       # Runs inside the payment's lock, which Spree's refund workflow also
       # takes to create a refund. Two syncs for one payment (two partial
       # refunds reported together) take turns, and the second finds what the
-      # first recorded.
+      # first recorded. Everything that decides what is recorded is checked
+      # here, on the payment as the lock read it: PayPal was read before the
+      # lock, and the payment may have been voided, or refunded, meanwhile.
       def record(paypal_refunds)
+        return [] if payment_not_synced?
+
         ensure_no_refund_in_progress!
 
         unrecorded = paypal_refunds.select { |paypal_refund| unrecorded_and_completed?(paypal_refund) }
@@ -131,8 +140,14 @@ module Spree
         raise RefundInProgress, "Payment #{payment.number} has a refund made in Spree that PayPal has not confirmed yet"
       end
 
+      # A refund with no PayPal id is never recorded: the id is what keeps it
+      # from being recorded twice, and a blank transaction id would read as a
+      # refund still in progress.
       def unrecorded_and_completed?(paypal_refund)
-        if payment.refunds.exists?(transaction_id: paypal_refund['id'])
+        if paypal_refund['id'].blank?
+          skip(paypal_refund, 'PayPal gives it no id')
+          false
+        elsif payment.refunds.exists?(transaction_id: paypal_refund['id'])
           note(:info, "#{describe(paypal_refund)} already recorded on payment #{payment.number}")
           false
         elsif paypal_refund['status'] != 'COMPLETED'
@@ -242,7 +257,9 @@ module Spree
       end
 
       def describe(paypal_refund)
-        "PayPal refund #{paypal_refund['id']} of #{paypal_refund.dig('amount', 'value')} #{paypal_refund.dig('amount', 'currency_code')}"
+        amount = "of #{paypal_refund.dig('amount', 'value')} #{paypal_refund.dig('amount', 'currency_code')}"
+
+        ['PayPal refund', paypal_refund['id'].presence, amount].compact.join(' ')
       end
 
       def money(amount)

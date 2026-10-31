@@ -224,6 +224,76 @@ RSpec.describe Spree::PaypalMerchant::SyncRefunds do
     end
   end
 
+  # PayPal is read before the payment is locked, so the payment and its
+  # refunds can change before the lock is held: another sync records a
+  # refund, Spree starts one, or the payment is voided. Whatever decides what
+  # is recorded is checked again inside the lock.
+  describe 'what changes before the payment lock is held' do
+    let(:paypal_refund_ids) { %w[1JU08902781691411 8MC585209K746392H] }
+    # The payment the sync locks.
+    let(:synced_payment) { Spree::Payment.find(payment.id) }
+
+    # Makes the change the way another process's committed write appears:
+    # once the lock is taken (and the payment read again), just before the
+    # sync's own work runs.
+    def once_locked(&change)
+      allow(synced_payment).to receive(:with_lock).and_wrap_original do |with_lock, *args, &work|
+        with_lock.call(*args) do
+          change.call
+          work.call
+        end
+      end
+    end
+
+    # Makes the change before the lock is taken, so the lock reads it.
+    def while_waiting_for_the_lock(&change)
+      allow(synced_payment).to receive(:with_lock).and_wrap_original do |with_lock, *args, &work|
+        change.call
+        with_lock.call(*args, &work)
+      end
+    end
+
+    def sync_locked
+      described_class.new(payment: synced_payment).call
+    end
+
+    before { stub_paypal_order(paypal_fixture('refunded_paypal_order')) }
+
+    context 'when another sync records one of the refunds' do
+      before { once_locked { Spree::Refund.create!(payment_id: payment.id, amount: 10, reason: refund_reason, transaction_id: paypal_refund_ids.first) } }
+
+      it 'records it once, not twice' do
+        sync_locked
+
+        expect(refunds.pluck(:transaction_id)).to contain_exactly(*paypal_refund_ids)
+      end
+    end
+
+    context 'when a refund is made in Spree and has no PayPal refund id yet' do
+      before { once_locked { Spree::Refund.create!(payment_id: payment.id, amount: 10, reason: refund_reason) } }
+
+      it 'raises, and records nothing' do
+        expect { sync_locked }.to raise_error(described_class::RefundInProgress)
+
+        expect(Spree::Refund.where(transaction_id: paypal_refund_ids)).to be_empty
+      end
+    end
+
+    context 'when the payment is voided' do
+      # Another process's write: the payment in memory does not see it.
+      before { while_waiting_for_the_lock { Spree::Payment.where(id: payment.id).update_all(status: 'void') } } # rubocop:disable Rails/SkipsModelValidations
+
+      it 'records nothing, and logs why' do
+        allow(Rails.logger).to receive(:warn)
+
+        sync_locked
+
+        expect(refunds).to be_empty
+        expect(Rails.logger).to have_received(:warn).with(/#{payment.number}: it is void/)
+      end
+    end
+  end
+
   context 'when a PayPal refund is in another currency' do
     before { stub_paypal_order(paypal_order_with(paypal_refund('IN-EUROS', '10.00', currency: 'EUR'))) }
 
@@ -327,6 +397,22 @@ RSpec.describe Spree::PaypalMerchant::SyncRefunds do
       sync
 
       expect(refunds).to be_empty
+    end
+  end
+
+  # The PayPal refund id is what keeps a refund from being recorded twice, and
+  # a blank transaction id would read as a refund still in progress.
+  context 'when a PayPal refund has no id' do
+    before { stub_paypal_order(paypal_order_with(paypal_refund(nil, '10.00'), paypal_refund('', '5.00'))) }
+
+    it 'records nothing, and logs why' do
+      allow(Rails.logger).to receive(:warn)
+
+      sync
+
+      expect(refunds).to be_empty
+      expect(Rails.logger).to have_received(:warn).with(/PayPal refund of 10\.00 USD.*no id/)
+      expect(Rails.logger).to have_received(:warn).with(/PayPal refund of 5\.00 USD.*no id/)
     end
   end
 
