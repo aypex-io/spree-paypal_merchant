@@ -90,7 +90,7 @@ ignored.
 | `PAYMENT.CAPTURE.PENDING` | Settles it as pending (an eCheck, say); `COMPLETED` completes it later |
 | `PAYMENT.CAPTURE.DENIED`, `PAYMENT.CAPTURE.DECLINED` | Fails the payment session if it is still open. A payment already left pending by `PAYMENT.CAPTURE.PENDING` stays pending (no money was taken); use Capture in the dashboard: it reads PayPal and fails the payment if PayPal denied the capture (or completes it if PayPal completed it) |
 | `PAYMENT.CAPTURE.REFUNDED` | Records the refund on the Spree payment (see [Refunds made in PayPal](#refunds-made-in-paypal)). PayPal sends it for refunds made from Spree too; those are not recorded twice |
-| `PAYMENT.CAPTURE.REVERSED` | Cancels the payment session if it is still open and the event names the PayPal order. A completed session and its payment are left as they are, so a reversal made in PayPal (after a chargeback, say) does not change the Spree payment |
+| `PAYMENT.CAPTURE.REVERSED` | Cancels the payment session if it is still open and the event names the PayPal order. The event leaves a completed session and its payment as they are. But the refund sync records whatever PayPal lists as a `COMPLETED` refund of the capture, so if PayPal lists a reversal (after a chargeback, say) among the order's refunds, a later sync records it as a refund |
 
 ## In the dashboard
 
@@ -132,6 +132,16 @@ PayPal's answer. Not recorded, and logged: a refund PayPal hasn't completed, one
 in another currency than the payment's, one for more than is left to refund,
 and any refund of a payment that isn't completed (one Spree voided, say).
 Payments taken on 5.x are synced too.
+
+The sync records whatever PayPal lists as a `COMPLETED` refund of the
+payment's capture. If PayPal lists a reversal there (after a chargeback, say),
+the sync records it as a refund, though `PAYMENT.CAPTURE.REVERSED` itself
+changes nothing.
+
+Refunds recorded from PayPal don't run Spree's refund workflow, so its
+callbacks (`:validate`, `:before_refund`, `:after_refund`) don't run for them.
+App hooks registered there, such as a customer refund email, won't fire. The
+`refund.created` and `payment.refunded` events do.
 
 For refunds made before the webhook was set up, or ones the job gave up on,
 run the same sync for one order's PayPal payments. It prints what it recorded
