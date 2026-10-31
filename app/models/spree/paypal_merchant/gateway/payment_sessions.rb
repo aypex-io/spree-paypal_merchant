@@ -331,6 +331,10 @@ module Spree
         # on its metadata; one taken on 5.x holds the capture id as its
         # response code.
         #
+        # Response codes are searched first. The metadata is searched only
+        # when none matches: its expression has no index, so it reads every
+        # payment of the method.
+        #
         # @param refund [Hash] a PayPal refund, as JSON
         # @return [Spree::Payment, NilClass]
         #
@@ -341,10 +345,11 @@ module Spree
           response_codes = [related_ids['order_id'].presence, capture_id].compact
           return if response_codes.empty?
 
-          payments = Spree::Payment.where(payment_method_id: id)
-          matches = payments.where(response_code: response_codes)
-          matches = matches.or(payments.where(recorded_capture_id_sql, capture_id)) if capture_id
-          matches.order(:id).first
+          payments = Spree::Payment.where(payment_method_id: id).order(:id)
+          payment = payments.find_by(response_code: response_codes)
+          return payment if payment || capture_id.nil?
+
+          payments.find_by(recorded_capture_id_sql, capture_id)
         end
 
         ##

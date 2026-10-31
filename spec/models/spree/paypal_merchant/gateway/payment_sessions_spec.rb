@@ -1140,7 +1140,8 @@ RSpec.describe Spree::PaypalMerchant::Gateway::PaymentSessions do
                            skip_source_requirement: true, response_code: 'ORDER-123', metadata: { 'paypal_capture_id' => 'CAPTURE-456' })
         end
 
-        it 'syncs the refunds of the payment that holds the capture, after the wait Spree gives payment webhooks' do
+        # No response code names the capture, so the payment is found by its metadata.
+        it 'syncs the refunds of the payment whose metadata holds the capture, after the wait Spree gives payment webhooks' do
           freeze_time do
             expect { parse }.to have_enqueued_job(Spree::PaypalMerchant::SyncRefundsJob)
               .with(payment_id: payment.id).on_queue(Spree.queues.payment_webhooks.to_s).at(30.seconds.from_now)
@@ -1151,12 +1152,14 @@ RSpec.describe Spree::PaypalMerchant::Gateway::PaymentSessions do
           expect(parse).to be_nil
         end
 
-        it 'does not ask PayPal: the job reads the refunds' do
-          allow(gateway).to receive(:client)
+        # Every PayPal host answers, so a lookup that asked PayPal (to read the
+        # capture's order, say) would succeed here and be caught below.
+        it 'finds the payment from the event alone, without asking PayPal' do
+          stub_request(:any, /paypal\.com/).to_return(status: 200, body: '{}', headers: { 'Content-Type' => 'application/json' })
 
           parse
 
-          expect(gateway).not_to have_received(:client)
+          expect(a_request(:any, /paypal\.com/)).not_to have_been_made
         end
 
         context 'when no payment holds the capture' do
@@ -1190,6 +1193,17 @@ RSpec.describe Spree::PaypalMerchant::Gateway::PaymentSessions do
 
           it 'syncs its refunds' do
             expect { parse }.to have_enqueued_job(Spree::PaypalMerchant::SyncRefundsJob).with(payment_id: payment.id)
+          end
+
+          # The metadata expression has no index, and would read every payment
+          # of the method.
+          it 'finds it by response code, without searching payment metadata' do
+            queries = []
+            record_query = ->(*, payload) { queries << payload[:sql] }
+
+            ActiveSupport::Notifications.subscribed(record_query, 'sql.active_record') { parse }
+
+            expect([queries.grep(/response_code/).size, queries.grep(/paypal_capture_id/)]).to match([be_positive, []])
           end
         end
 
