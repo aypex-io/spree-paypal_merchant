@@ -1,5 +1,16 @@
 # Changelog
 
+## 6.0.2
+
+### Fixed
+
+- The PayPal SDK no longer writes a `WARN Request …` and `WARN Response …` line
+  to standard output for every PayPal call. Given no logger, the SDK printed to
+  standard output at the level the gem passed, outside the app's log level and
+  format. `Spree::PaypalMerchant::SdkLogger` now hands those lines to the Rails
+  log at `debug`, prefixed `[spree-paypal_merchant]`, so a production log at
+  `info` leaves them out (see "Logging" in the README).
+
 ## 6.0.1
 
 To record refunds made in PayPal, subscribe the webhook to
