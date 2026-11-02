@@ -259,10 +259,10 @@ RSpec.describe Spree::PaymentSessions::PaypalMerchant do
       end
     end
 
-    # Spree keeps a source's profile id unique per source type, not per payment
-    # method, so the buyer's PayPal account can already have a source under
-    # another PayPal method (a second store, a recreated method). The money is
-    # captured, so the clash must not stop the payment.
+    # Before Spree 6.0.2 a source's profile id was unique per source type, not
+    # per payment method, so the buyer's PayPal account could already have a
+    # source under another PayPal method (a second store, a recreated method).
+    # The money is captured, so the clash must not stop the payment.
     context 'when another PayPal method already holds a source for the buyer' do
       let!(:other_source) do
         create(:paypal_merchant_payment_source, payment_method: create(:paypal_merchant_gateway, store: cart.store),
@@ -271,23 +271,31 @@ RSpec.describe Spree::PaymentSessions::PaypalMerchant do
 
       before { allow(Rails.logger).to receive(:warn) }
 
-      it 'completes a payment without a source' do
-        payment = session.settle_payment!(captured: true)
-
-        expect(payment.reload).to have_attributes(source: nil, completed?: true)
-      end
-
       it 'leaves the other source with its own method' do
         session.settle_payment!(captured: true)
 
         expect(other_source.reload.payment_method_id).not_to eq(gateway.id)
       end
 
-      it 'logs the clash, without the buyer details' do
-        session.settle_payment!(captured: true)
+      if PaymentSourceUniqueness.per_payment_method?
+        it 'gives the payment its own source under this method' do
+          payment = session.settle_payment!(captured: true)
 
-        expect(Rails.logger).to have_received(:warn).with(/RecordInvalid.*settling payment session #{session.id} without a source/)
-        expect(Rails.logger).not_to have_received(:warn).with(/RX8ZD67CZ67RU|personal\.example\.com/)
+          expect(payment.reload).to have_attributes(completed?: true, source: have_attributes(payment_method_id: gateway.id))
+        end
+      else
+        it 'completes a payment without a source' do
+          payment = session.settle_payment!(captured: true)
+
+          expect(payment.reload).to have_attributes(source: nil, completed?: true)
+        end
+
+        it 'logs the clash, without the buyer details' do
+          session.settle_payment!(captured: true)
+
+          expect(Rails.logger).to have_received(:warn).with(/RecordInvalid.*settling payment session #{session.id} without a source/)
+          expect(Rails.logger).not_to have_received(:warn).with(/RX8ZD67CZ67RU|personal\.example\.com/)
+        end
       end
     end
 
