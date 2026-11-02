@@ -124,6 +124,14 @@ RSpec.describe Spree::PaypalMerchant::Gateway::PaymentSessions do
       )
     end
 
+    it "gives the storefront the client id to load PayPal's SDK with" do
+      gateway.preferred_client_id = 'sandbox-client-id'
+
+      session = gateway.create_payment_session(order: cart)
+
+      expect(session.external_data['client_id']).to eq('sandbox-client-id')
+    end
+
     context 'when the cart belongs to a guest' do
       let(:cart) { create(:cart_with_line_items, store: store) }
 

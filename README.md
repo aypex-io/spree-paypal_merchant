@@ -23,6 +23,10 @@ releases, on the `5-2-stable` branch.
   (`POST /api/v3/store/carts/:id/payment_sessions` → complete).
 - The storefront owns the address. The gem pins it with
   `SET_PROVIDED_ADDRESS` so PayPal does not re-collect it.
+- The payment session's `external_data.client_id` is the client id to load
+  PayPal's JS SDK with. It comes from the payment method, so the SDK always
+  belongs to the same PayPal app (sandbox or live) as the order, and one
+  storefront build can serve a sandbox and a live backend.
 - PayPal **captures at checkout**, whatever capture method the store defaults
   to. Authorize now, capture later is not supported: a payment method whose own
   capture method is `on_dispatch` or `manual` is refused. Spree never captures a

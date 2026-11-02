@@ -1,5 +1,16 @@
 # Changelog
 
+## 6.0.3
+
+### Added
+
+- A payment session's `external_data` carries `client_id`, the payment
+  method's PayPal client id. A storefront that loads PayPal's JS SDK with it
+  always uses the same PayPal app (sandbox or live) as the order. A client id
+  set in storefront config at build time could point at the live app while the
+  backend used the sandbox one, and checkout then failed. PayPal client ids are
+  public: the SDK sends them in its script URL.
+
 ## 6.0.2
 
 ### Fixed

@@ -241,8 +241,14 @@ RSpec.describe 'PayPal settlement through confirm and webhook' do
       expect(payment_session.reload).to be_completed
     end
 
-    it 'settles a completed payment with no source' do
-      expect(payments.sole).to have_attributes(completed?: true, source: nil)
+    if PaymentSourceUniqueness.per_payment_method?
+      it 'settles a completed payment with its own source' do
+        expect(payments.sole).to have_attributes(completed?: true, source: have_attributes(payment_method_id: gateway.id))
+      end
+    else
+      it 'settles a completed payment with no source' do
+        expect(payments.sole).to have_attributes(completed?: true, source: nil)
+      end
     end
 
     context 'when the storefront then places the cart' do
