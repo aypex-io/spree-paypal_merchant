@@ -105,6 +105,11 @@ module Spree
 
             session_data = paypal_response.data.as_json
 
+            # The client id the storefront loads PayPal's JS SDK with. It must
+            # be the same app as the client secret that created the order, so
+            # it comes from this payment method rather than storefront config.
+            # PayPal client ids are public: the SDK puts them in its URL.
+            session_data['client_id'] = preferred_client_id
             session_data['enable_apple_pay'] = apple_pay_enabled?
             session_data['enable_card_fields'] = card_fields_enabled?
 
@@ -135,10 +140,10 @@ module Spree
         # the new amount. The same amount is accepted.
         #
         # +external_data+ is ignored. The gem writes every key the storefront
-        # reads (+id+, +status+, +client_token+, +enable_apple_pay+,
-        # +enable_card_fields+), and settlement reads PayPal's own order
-        # (+purchase_units+, +payment_source+), so no key is the client's to
-        # write.
+        # reads (+id+, +status+, +client_id+, +client_token+,
+        # +enable_apple_pay+, +enable_card_fields+), and settlement reads
+        # PayPal's own order (+purchase_units+, +payment_source+), so no key
+        # is the client's to write.
         #
         # @param payment_session [Spree::PaymentSessions::PaypalMerchant]
         # @param amount [Numeric, String, NilClass]
