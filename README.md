@@ -60,7 +60,10 @@ bin/rails g spree:paypal_merchant:install
 The generator copies the migrations. Pass `--auto-run-migrations` to skip the
 prompt.
 
-Then add a **PayPal** payment method in the admin dashboard and set:
+Then connect PayPal in the dashboard under **Settings → Integrations**. The
+**[setup guide](docs/setup.md)** walks store staff through it: the PayPal app,
+the webhook address and events, and testing in the sandbox. The card's
+**Setup guide** link opens it too. The preferences it sets:
 
 | Preference | Purpose |
 |---|---|
