@@ -135,12 +135,25 @@ module Spree
       end
 
       ##
-      # The setup guide the card links to.
+      # The setup guide the card links to: connecting the PayPal app and its
+      # webhook, written for store staff.
       #
       # @return [String]
       #
       def self.docs_url
-        'https://github.com/aypex-io/spree-paypal_merchant#readme'
+        'https://github.com/aypex-io/spree-paypal_merchant/blob/main/docs/setup.md'
+      end
+
+      ##
+      # One line on what the provider does, shown on its card under
+      # Settings -> Integrations before it is connected, and in the "add payment
+      # method" picker. A connected method's card shows that record's own
+      # description instead, which storefronts may show to buyers.
+      #
+      # @return [String]
+      #
+      def self.description
+        'Take payments with PayPal, credit and debit cards, and Apple Pay through your PayPal business account.'
       end
 
       ##

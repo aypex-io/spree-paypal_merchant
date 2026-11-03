@@ -91,9 +91,30 @@ RSpec.describe Spree::PaypalMerchant::Gateway do
     it 'shows the PayPal logo, links to the setup guide, and lists PayPal as third-party' do
       expect(described_class.provider_listing).to eq(
         logo_url: described_class.logo_url,
-        docs_url: 'https://github.com/aypex-io/spree-paypal_merchant#readme',
+        docs_url: 'https://github.com/aypex-io/spree-paypal_merchant/blob/main/docs/setup.md',
         third_party: true
       )
+    end
+  end
+
+  # The provider card and the "add payment method" picker read the type's
+  # description from the payment method types endpoint.
+  describe '.description' do
+    it 'describes PayPal in the payment method types listing' do
+      entry = Spree::PaymentMethod.subclasses_with_preference_schema.find { |type| type[:type] == described_class.api_type }
+
+      expect(entry[:description]).to eq(
+        'Take payments with PayPal, credit and debit cards, and Apple Pay through your PayPal business account.'
+      )
+    end
+  end
+
+  # The guide the card links to ships in the repository the link points at.
+  describe 'setup guide' do
+    it 'exists at the path the setup guide link names' do
+      guide = Spree::PaypalMerchant::Engine.root.join('docs/setup.md')
+
+      expect(guide).to exist
     end
   end
 

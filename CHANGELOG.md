@@ -1,5 +1,19 @@
 # Changelog
 
+## 6.0.4
+
+### Added
+
+- A setup guide for store staff, `docs/setup.md`: creating the PayPal app,
+  working out the webhook address, which events to subscribe, where the
+  Webhook ID goes, testing in the sandbox, and troubleshooting. The PayPal
+  card's **Setup guide** link under Settings → Integrations now opens it
+  instead of the README.
+- `Gateway.description`, one line on what the provider does. The dashboard
+  shows it on the PayPal card before PayPal is connected, and in the "add
+  payment method" picker. A connected method's card still shows that record's
+  own Description, which storefronts may show to buyers.
+
 ## 6.0.3
 
 ### Added
