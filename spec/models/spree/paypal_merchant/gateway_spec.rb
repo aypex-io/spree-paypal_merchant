@@ -500,6 +500,37 @@ RSpec.describe Spree::PaypalMerchant::Gateway do
     end
   end
 
+  # PayPal payments are captured at checkout, so a completed one holds money
+  # that only a refund gives back. Spree 6.0.2 asks the payment method before
+  # the dashboard offers Void.
+  describe '#can_void?' do
+    it 'refuses a completed payment' do
+      payment = build_stubbed(:payment, payment_method: gateway, status: 'completed')
+
+      expect(gateway.can_void?(payment)).to be(false)
+    end
+
+    # Spree still sends these to #void, which refuses while PayPal may complete
+    # them, so cancelling their order stops with that reason.
+    %w[checkout pending processing].each do |unfinished|
+      it "leaves a #{unfinished} payment to #void" do
+        payment = build_stubbed(:payment, payment_method: gateway, status: unfinished)
+
+        expect(gateway.can_void?(payment)).to be(true)
+      end
+    end
+
+    context 'when Spree asks the payment method' do
+      before { skip 'Spree before 6.0.2 does not ask the payment method' unless PaymentVoidHook.asks_payment_method? }
+
+      it 'offers no Void on a completed payment' do
+        payment = build_stubbed(:payment, payment_method: gateway, status: 'completed')
+
+        expect(payment.can_void?).to be(false)
+      end
+    end
+  end
+
   describe '#void' do
     let(:payments_api) { instance_double(PaypalServerSdk::PaymentsController) }
 

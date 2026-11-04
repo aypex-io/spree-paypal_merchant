@@ -1,5 +1,27 @@
 # Changelog
 
+## 6.0.5
+
+### Fixed
+
+- The dashboard no longer offers **Void** on a completed PayPal payment. The
+  payment is captured, so Void could only fail, telling the merchant to refund
+  instead. `Gateway#can_void?` now returns false for a completed payment;
+  Spree 6.0.2 and later ask it before showing Void. (Earlier Spree 6.0 releases
+  go by the payment's status alone, so this changes nothing there.)
+
+  A void requested through the API is now refused by Spree before it reaches
+  the gateway, with Spree's `payment_not_voidable` error. Payments PayPal may
+  still complete (checkout, pending, processing) are unchanged: Spree still
+  asks the gateway, which refuses them, so canceling their order still stops
+  and says PayPal is still processing the payment.
+
+### Changed
+
+- The test bundle requires `ostruct`. Spree's `stringex` requires it without
+  depending on it, Ruby 4.0 no longer ships it as a default gem, and `oj`
+  stopped pulling it in with 3.17.8, so the dummy app failed to boot.
+
 ## 6.0.4
 
 ### Added

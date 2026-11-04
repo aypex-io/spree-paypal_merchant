@@ -112,8 +112,9 @@ ignored.
   the payment in the dashboard before canceling the order, or refund it in
   PayPal.
 - **Void** always fails. A PayPal payment holds captured money, so refund it
-  instead. One that PayPal is still processing can't be voided or canceled;
-  refund it once PayPal completes it.
+  instead. On Spree 6.0.2 and later the dashboard doesn't offer Void on a
+  completed PayPal payment at all. One that PayPal is still processing can't be
+  voided or canceled; refund it once PayPal completes it.
 
 ## Refunds made in PayPal
 
