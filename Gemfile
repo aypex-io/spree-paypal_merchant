@@ -12,6 +12,10 @@ gem 'spree', spree_version unless spree_version.empty?
 gem 'pg'
 gem 'propshaft'
 
+# Spree's stringex requires ostruct without depending on it, and Ruby 4.0 no
+# longer ships it as a default gem. oj used to pull it in, until oj 3.17.8.
+gem 'ostruct'
+
 group :development, :test do
   gem 'dotenv'
   gem 'rubocop'

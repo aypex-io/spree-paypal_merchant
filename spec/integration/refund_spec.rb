@@ -300,9 +300,26 @@ RSpec.describe 'PayPal refunds and cancellation through Spree workflows' do
   describe 'voiding a payment' do
     let(:result) { Spree.payment_void_workflow.call(payment: payment) }
 
-    it 'fails, telling the merchant to refund instead' do
+    it 'fails' do
       expect(result).to be_failure
-      expect(result.error.to_s).to eq('PayPal payments are captured at checkout; refund the payment instead.')
+    end
+
+    # Spree 6.0.2 asks the gateway's #can_void? first, which refuses a
+    # captured payment, so the dashboard never offers Void on one.
+    context 'when Spree asks the payment method' do
+      before { skip 'Spree before 6.0.2 does not ask the payment method' unless PaymentVoidHook.asks_payment_method? }
+
+      it 'refuses it as not voidable' do
+        expect(result.error.to_s).to eq('payment_not_voidable')
+      end
+    end
+
+    context 'when Spree does not ask the payment method' do
+      before { skip 'Spree 6.0.2 and later ask the payment method' if PaymentVoidHook.asks_payment_method? }
+
+      it 'tells the merchant to refund instead' do
+        expect(result.error.to_s).to eq('PayPal payments are captured at checkout; refund the payment instead.')
+      end
     end
 
     it 'does not call PayPal' do

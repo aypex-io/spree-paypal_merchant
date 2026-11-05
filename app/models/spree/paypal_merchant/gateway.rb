@@ -359,6 +359,22 @@ module Spree
       end
 
       ##
+      # Whether Spree may void the payment. Spree 6.0.2 and later ask before
+      # the dashboard offers Void.
+      #
+      # A completed PayPal payment is captured, so only a refund gives the
+      # money back. Any other payment is left to {#void}, which refuses it
+      # while PayPal may still complete it, so cancelling its order stops with
+      # that reason instead of skipping it.
+      #
+      # @param payment [Spree::Payment]
+      # @return [Boolean]
+      #
+      def can_void?(payment)
+        !payment.completed?
+      end
+
+      ##
       # PayPal payments are captured at checkout, so there is never an
       # authorization to void: a payment that holds money is refunded instead.
       #
