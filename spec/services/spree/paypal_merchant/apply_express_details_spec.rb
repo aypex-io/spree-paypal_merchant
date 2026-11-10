@@ -55,11 +55,54 @@ RSpec.describe Spree::PaypalMerchant::ApplyExpressDetails do
       address.attributes.slice(*written.keys).merge('quick_checkout' => address.quick_checkout?)
     end
 
-    it "writes PayPal's name and address as the full ship and bill address" do
-      apply
+    # What a write changes: the address rows the cart points at, the street,
+    # and the delivery rate it has selected (rates are recreated by a quote).
+    def cart_state
       cart.reload
+      [cart.ship_address_id, cart.bill_address_id, cart.ship_address.address1, cart.fulfillments.sole.selected_delivery_rate]
+    end
 
-      expect([cart.ship_address, cart.bill_address].map { |address| full_address_fields(address) }).to eq([written, written])
+    shared_examples "writing PayPal's details" do
+      it "writes PayPal's name and address as the full ship and bill address" do
+        apply
+        cart.reload
+
+        expect([cart.ship_address, cart.bill_address].map { |address| full_address_fields(address) }).to eq([written, written])
+      end
+
+      # Two confirms of one PayPal order, or a retry, find the details written.
+      it 'changes nothing when it runs again' do
+        apply
+
+        expect { apply }.not_to(change { [Spree::Address.count, cart_state] })
+      end
+
+      it 'keeps the delivery chosen in PayPal when it runs again' do
+        2.times { apply }
+
+        expect(cart.reload.fulfillments.sole.selected_delivery_rate.delivery_method).to eq(express_delivery)
+      end
+
+      # The address and the delivery are written together or not at all, so
+      # nobody sees the cart with PayPal's address and Spree's default delivery.
+      it 'leaves the cart as it was when it refuses' do
+        paypal_order['purchase_units'][0]['shipping']['options'][1]['id'] = 'dm_withdrawn'
+        before_refusal = cart_state
+
+        expect { apply }.to raise_error(Spree::Core::GatewayError)
+
+        expect(cart_state).to eq(before_refusal)
+      end
+    end
+
+    it_behaves_like "writing PayPal's details"
+
+    # A guest's cart edits its address row in place until the bill address
+    # shares it; after that, each write makes a new row.
+    context 'when the cart belongs to a guest' do
+      let(:customer) { nil }
+
+      it_behaves_like "writing PayPal's details"
     end
 
     # PayPal sends the region as the buyer's PayPal account names it.

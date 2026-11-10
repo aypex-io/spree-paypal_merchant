@@ -216,8 +216,10 @@ module Spree
         # PayPal's popup. The amount check then compares PayPal's amount with
         # what that cart owes. When the details cannot be written (Spree
         # refuses the address, or the chosen delivery is not offered for it),
-        # the session fails and nothing is captured. A PayPal order that
-        # already has a capture is settled as it is, with nothing written.
+        # the cart is left as it was, the session fails and nothing is
+        # captured. A second confirm of the same PayPal order finds the
+        # details written and changes nothing. A PayPal order that already
+        # has a capture is settled as it is, with nothing written.
         #
         # Only a refusal fails the session: PayPal's, a changed amount, or
         # express details that cannot be written. When the outcome is unknown

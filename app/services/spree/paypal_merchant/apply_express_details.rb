@@ -18,6 +18,12 @@ module Spree
     # are recreated by every quote. A PayPal order with no options offered no
     # choice, and the cart keeps the delivery Spree selected.
     #
+    # The address and the delivery are written together, holding the cart's
+    # row lock, or not at all: a refusal rolls the address back, and no other
+    # request ever sees PayPal's address with Spree's default delivery. Two
+    # confirms of one PayPal order (a double submit, or a retry) take turns,
+    # and the second finds the details written and changes nothing.
+    #
     # The amount is not checked here: the gateway compares PayPal's amount
     # with what the cart now owes before it captures.
     #
@@ -37,18 +43,65 @@ module Spree
       end
 
       ##
+      # Does nothing when the cart already holds the details.
+      #
       # @return [void]
       # @raise [Spree::Core::GatewayError] when Spree refuses the address, or
-      #   the delivery chosen in PayPal is not offered for it
+      #   the delivery chosen in PayPal is not offered for it; the cart is
+      #   left as it was
       #
       def call
-        write_address
-        select_chosen_delivery
+        owner.with_lock do
+          next if already_written?
+
+          write_address
+          select_chosen_delivery
+        end
       end
 
       private
 
       attr_reader :owner, :paypal_order
+
+      # Whether the cart already holds this PayPal order's details, as a
+      # second confirm or a retry finds them: the email, the address (shared
+      # by the bill address), and the delivery chosen in PayPal.
+      def already_written?
+        email.nil? && address_written? && chosen_delivery_selected?
+      end
+
+      def address_written?
+        address = owner.ship_address
+        return false if address.nil? || address.quick_checkout? || owner.bill_address_id != address.id
+
+        address_key(address.attributes.symbolize_keys) == address_key(shipping_address)
+      end
+
+      # An address's fields as Spree stores them: the postcode without spaces
+      # or dashes, and the region as its code wherever the country has one.
+      # The phone counts only when PayPal sends one, as only then is it
+      # written.
+      def address_key(fields)
+        country_code = fields[:country_code].to_s.upcase
+        region = fields[:state_code].presence ||
+                 Spree::IsoData.subdivision_code(country_code, fields[:state_name]) ||
+                 fields[:state_name].presence
+
+        [
+          *fields.values_at(:first_name, :last_name, :address1, :address2, :city).map(&:presence),
+          Spree::Address.normalize_postal_code(fields[:postal_code]),
+          country_code,
+          region,
+          (fields[:phone].presence if paypal_phone.present?)
+        ]
+      end
+
+      def chosen_delivery_selected?
+        return true if shipping_options.empty?
+
+        delivery_method = sole_fulfillment&.selected_delivery_rate&.delivery_method
+        delivery_method.present? && delivery_method.prefixed_id == chosen_option_id
+      end
 
       def write_address
         result = Spree.carts_update_service.call(
@@ -69,7 +122,6 @@ module Spree
       def shipping_address
         address = shipping['address'] || {}
         first_name, last_name = shipping.dig('name', 'full_name').to_s.split(' ', 2)
-        phone = payer.dig('phone', 'phone_number', 'national_number')
 
         attributes = {
           first_name: first_name.presence || payer.dig('name', 'given_name'),
@@ -83,8 +135,12 @@ module Spree
           state_name: address['admin_area_1'],
           quick_checkout: false
         }
-        attributes[:phone] = phone if phone.present?
+        attributes[:phone] = paypal_phone if paypal_phone.present?
         attributes
+      end
+
+      def paypal_phone
+        payer.dig('phone', 'phone_number', 'national_number')
       end
 
       # PayPal sends a region as a code or a name ("California"). Where the
