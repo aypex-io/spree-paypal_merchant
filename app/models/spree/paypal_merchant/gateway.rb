@@ -110,6 +110,7 @@ module Spree
       preference :test_mode, :boolean, default: true
       preference :enable_apple_pay, :boolean, default: true
       preference :enable_card_fields, :boolean, default: true
+      preference :enable_express_checkout, :boolean, default: true
 
       validates :preferred_client_id, :preferred_client_secret, presence: true
 
@@ -221,6 +222,16 @@ module Spree
       #
       def card_fields_enabled?
         preferred_enable_card_fields
+      end
+
+      ##
+      # Whether the storefront should offer express checkout (PayPal and Apple
+      # Pay buttons ahead of the checkout form) for this method.
+      #
+      # @return [TrueClass, FalseClass]
+      #
+      def express_checkout_enabled?
+        preferred_enable_express_checkout
       end
 
       ##
@@ -476,7 +487,7 @@ module Spree
       protected
 
       def public_preference_keys
-        %i[enable_apple_pay enable_card_fields]
+        %i[enable_apple_pay enable_card_fields client_id enable_express_checkout]
       end
 
       private
