@@ -60,6 +60,19 @@ module Spree
         REFUND_EVENT = 'PAYMENT.CAPTURE.REFUNDED'
 
         ##
+        # Why a session's amount is refused: it is not what is due.
+        #
+        AMOUNT_CHANGE_MESSAGE = 'The amount of a PayPal payment session cannot change; create a new payment session for the new amount'
+
+        ##
+        # Where an express order's update writes, in PayPal's JSON Patch
+        # paths. The gem's orders have one purchase unit, which PayPal names
+        # +default+.
+        #
+        EXPRESS_AMOUNT_PATH = "/purchase_units/@reference_id=='default'/amount"
+        EXPRESS_OPTIONS_PATH = "/purchase_units/@reference_id=='default'/shipping/options"
+
+        ##
         # @return [TrueClass, FalseClass]
         #
         def session_required?
@@ -142,12 +155,26 @@ module Spree
         end
 
         ##
-        # Changes nothing: a PayPal session is fixed once its PayPal order
-        # exists.
+        # Brings an express session's PayPal order in step with its cart; any
+        # other session is fixed once its PayPal order exists.
         #
-        # The amount is the PayPal order's, and the payment records it, so a
-        # different amount is refused: the storefront creates a new session for
-        # the new amount. The same amount is accepted.
+        # An express session ({Spree::PaymentSessions::PaypalMerchant#express?})
+        # follows the cart while the buyer changes the address or the delivery
+        # in PayPal's popup. The update is built from the cart, never from
+        # the client: PayPal's order gets the amount due, with the breakdown
+        # {OrderPresenter#purchase_amount} sends, and the cart's delivery rates
+        # as its shipping options ({OrderPresenter#shipping_options}), when it
+        # can offer them. The session's amount becomes the amount due. A
+        # session that is no longer pending, or a cart with no delivery rate
+        # for its address, is refused before PayPal is asked.
+        #
+        # Any other session changes nothing. Its amount is the PayPal order's,
+        # and the payment records it, so a different amount is refused: the
+        # storefront creates a new session for the new amount.
+        #
+        # An +amount+, when sent, must be what is due (an express session's
+        # cart, or any other session's own amount): it is checked, never
+        # applied.
         #
         # +external_data+ is ignored. The gem writes every key the storefront
         # reads (+id+, +status+, +client_id+, +client_token+,
@@ -158,14 +185,15 @@ module Spree
         # @param payment_session [Spree::PaymentSessions::PaypalMerchant]
         # @param amount [Numeric, String, NilClass]
         # @return [NilClass]
-        # @raise [Spree::Core::GatewayError] when the amount differs from the
-        #   session's
+        # @raise [Spree::Core::GatewayError] when the amount is not what is
+        #   due, an express session is no longer pending or its cart has no
+        #   delivery for its address, or PayPal fails
         #
         def update_payment_session(payment_session:, amount: nil, **_external_data)
+          return update_express_order(payment_session, amount) if payment_session.express?
           return if amount.blank? || amount.to_d == payment_session.amount.to_d
 
-          raise Spree::Core::GatewayError,
-                'The amount of a PayPal payment session cannot change; create a new payment session for the new amount'
+          raise Spree::Core::GatewayError, AMOUNT_CHANGE_MESSAGE
         end
 
         ##
@@ -409,6 +437,47 @@ module Spree
           return false if external_data.blank?
 
           (external_data['express'] || external_data[:express]) == true
+        end
+
+        ##
+        # PATCHes an express session's PayPal order to match its cart, then
+        # sets the session's amount to what is due ({#update_payment_session}).
+        #
+        # Shipping options are sent only when the presenter offers some (it
+        # offers none when the breakdown cannot carry them); otherwise the
+        # amount is sent alone, and it includes the cart's own delivery.
+        #
+        # @param payment_session [Spree::PaymentSessions::PaypalMerchant] an express session
+        # @param amount [Numeric, String, NilClass] checked against what is due
+        # @return [NilClass]
+        # @raise [Spree::Core::GatewayError]
+        #
+        def update_express_order(payment_session, amount)
+          raise Spree::Core::GatewayError, 'This PayPal payment session can no longer change' unless payment_session.pending?
+
+          owner = payment_session.owner
+          raise Spree::Core::GatewayError, 'PayPal cannot be offered a delivery for this address' unless owner.fulfillments.joins(:delivery_rates).exists?
+
+          due = owner.total_minus_store_credits
+          raise Spree::Core::GatewayError, AMOUNT_CHANGE_MESSAGE if amount.present? && amount.to_d != due.to_d
+
+          order_presenter = OrderPresenter.new(owner, amount: due, express: true)
+          operations = [paypal_replace(EXPRESS_AMOUNT_PATH, order_presenter.purchase_amount)]
+          operations << paypal_replace(EXPRESS_OPTIONS_PATH, order_presenter.shipping_options) if order_presenter.shipping_options.any?
+
+          protect_from_error { client.orders.patch_order('id' => payment_session.external_id, 'body' => operations) }
+          payment_session.update!(amount: due)
+
+          nil
+        end
+
+        ##
+        # @param path [String] a JSON Patch path in a PayPal order
+        # @param value [Object] what PayPal writes there
+        # @return [PaypalServerSdk::Patch] a +replace+ operation
+        #
+        def paypal_replace(path, value)
+          PaypalServerSdk::Patch.new(op: PaypalServerSdk::PatchOp::REPLACE, path: path, value: value)
         end
 
         ##
