@@ -1,5 +1,40 @@
 # Changelog
 
+## 6.1.0
+
+### Added
+
+- Express checkout. `create_payment_session` with
+  `external_data: { express: true }` creates a PayPal order that collects the
+  shipping address (`GET_FROM_FILE`), with shipping options built from the
+  cart's delivery rates (the option id is the delivery method's prefixed id).
+  Gift card and store credit count in the breakdown's discount; unpriced rates
+  are left out; if the breakdown can't balance, the order carries the amount
+  alone with no options.
+- `complete_payment_session` on an uncaptured express order writes PayPal's
+  shipping name and address (as ship and bill address), the payer's email (if
+  the cart has none) and phone onto the cart, and re-selects the delivery the
+  buyer chose in PayPal, atomically under the cart's row lock and skipped when
+  already applied. The amount check and capture follow. A refusal fails the
+  session with nothing captured.
+
+  If a store requires a phone number on addresses and the buyer's PayPal account
+  has none, express completion fails after approval. Such stores should not
+  require a phone number, or should keep express checkout off.
+- The `client_id` preference is now public, so storefronts receive it with the
+  payment method.
+- A new `enable_express_checkout` preference (default on). It is exposed with
+  the public preferences so a storefront can hide express checkout; the gem does
+  not enforce it.
+
+### Changed
+
+- `update_payment_session` accepts an update on a pending express session: it
+  PATCHes the PayPal order from the cart (amount replaced, shipping options
+  added). It refuses a session that isn't pending, a cart with no delivery, and
+  an amount the cart doesn't owe. Non-express sessions still refuse amount
+  changes.
+
 ## 6.0.5
 
 ### Fixed
