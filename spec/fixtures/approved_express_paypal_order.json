@@ -1,0 +1,113 @@
+{
+  "create_time": "2026-11-10T14:02:11Z",
+  "update_time": "2026-11-10T14:03:40Z",
+  "id": "5O190127TN364715T",
+  "intent": "CAPTURE",
+  "status": "APPROVED",
+  "payment_source": {
+    "paypal": {
+      "email_address": "ada.lovelace@example.com",
+      "account_id": "QYR5Z8XDVJNXQ",
+      "account_status": "VERIFIED",
+      "name": {
+        "given_name": "Ada",
+        "surname": "Lovelace"
+      },
+      "address": {
+        "country_code": "US"
+      }
+    }
+  },
+  "payer": {
+    "email_address": "ada.lovelace@example.com",
+    "payer_id": "QYR5Z8XDVJNXQ",
+    "name": {
+      "given_name": "Ada",
+      "surname": "Lovelace"
+    },
+    "phone": {
+      "phone_type": "MOBILE",
+      "phone_number": {
+        "national_number": "2135550123"
+      }
+    },
+    "address": {
+      "country_code": "US"
+    }
+  },
+  "purchase_units": [
+    {
+      "reference_id": "default",
+      "amount": {
+        "currency_code": "USD",
+        "value": "25.00",
+        "breakdown": {
+          "item_total": {
+            "currency_code": "USD",
+            "value": "10.00"
+          },
+          "shipping": {
+            "currency_code": "USD",
+            "value": "15.00"
+          }
+        }
+      },
+      "payee": {
+        "email_address": "merchant@example.com",
+        "merchant_id": "7KZ4DXLW6QY3S"
+      },
+      "shipping": {
+        "name": {
+          "full_name": "Ada Lovelace"
+        },
+        "address": {
+          "address_line_1": "1 Example Way",
+          "address_line_2": "Suite 100",
+          "admin_area_2": "Los Angeles",
+          "admin_area_1": "California",
+          "postal_code": "90012",
+          "country_code": "US"
+        },
+        "options": [
+          {
+            "id": "dm_standard",
+            "label": "Standard",
+            "type": "SHIPPING",
+            "amount": {
+              "currency_code": "USD",
+              "value": "10.00"
+            },
+            "selected": false
+          },
+          {
+            "id": "dm_express",
+            "label": "Express",
+            "type": "SHIPPING",
+            "amount": {
+              "currency_code": "USD",
+              "value": "15.00"
+            },
+            "selected": true
+          }
+        ]
+      }
+    }
+  ],
+  "links": [
+    {
+      "href": "https://api.sandbox.paypal.com/v2/checkout/orders/5O190127TN364715T",
+      "rel": "self",
+      "method": "GET"
+    },
+    {
+      "href": "https://api.sandbox.paypal.com/v2/checkout/orders/5O190127TN364715T",
+      "rel": "update",
+      "method": "PATCH"
+    },
+    {
+      "href": "https://api.sandbox.paypal.com/v2/checkout/orders/5O190127TN364715T/capture",
+      "rel": "capture",
+      "method": "POST"
+    }
+  ]
+}

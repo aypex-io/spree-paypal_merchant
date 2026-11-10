@@ -209,9 +209,20 @@ module Spree
         #
         # Does not complete the cart — that is handled by Carts::Complete.
         #
-        # Only a refusal from PayPal fails the session. When the outcome is
-        # unknown (no answer, a server error, an answer that cannot be read, a
-        # rate limit), PayPal may have captured anyway, so the session stays
+        # An express session ({Spree::PaymentSessions::PaypalMerchant#express?})
+        # whose PayPal order has no capture yet first gets what the buyer gave
+        # PayPal written onto its cart ({ApplyExpressDetails}): the address,
+        # the email when the cart has none, and the delivery chosen in
+        # PayPal's popup. The amount check then compares PayPal's amount with
+        # what that cart owes. When the details cannot be written (Spree
+        # refuses the address, or the chosen delivery is not offered for it),
+        # the session fails and nothing is captured. A PayPal order that
+        # already has a capture is settled as it is, with nothing written.
+        #
+        # Only a refusal fails the session: PayPal's, a changed amount, or
+        # express details that cannot be written. When the outcome is unknown
+        # (no answer, a server error, an answer that cannot be read, a rate
+        # limit), PayPal may have captured anyway, so the session stays
         # pending: a retry reads the order first and settles a capture that
         # went through.
         #
@@ -219,14 +230,16 @@ module Spree
         # @param params [Hash] not used
         # @return [Spree::PaymentSessions::PaypalMerchant]
         # @raise [Spree::Core::GatewayError] when the session can no longer be
-        #   used, the amount due has changed, PayPal refuses, or the outcome
-        #   is unknown
+        #   used, an express session's details cannot be written, the amount
+        #   due has changed, PayPal refuses, or the outcome is unknown
         #
         def complete_payment_session(payment_session:, **_unused)
           ensure_session_completable!(payment_session)
 
           response = fetch_paypal_order(payment_session.external_id)
-          if payment_session_class.paypal_capture_in(response.data.as_json).blank?
+          paypal_order = response.data.as_json
+          if payment_session_class.paypal_capture_in(paypal_order).blank?
+            apply_express_details!(payment_session, paypal_order) if payment_session.express?
             ensure_amount_matches!(payment_session, response)
             response = capture_paypal_order(payment_session.external_id)
           end
@@ -560,6 +573,25 @@ module Spree
           create_profile(payment) if payment.present?
 
           payment_session.complete unless payment_session.completed?
+        end
+
+        ##
+        # Writes the details the buyer gave PayPal onto an express session's
+        # cart ({ApplyExpressDetails}), then reads the cart again for the
+        # amount check. Anything that stops the write fails the session before
+        # PayPal is asked to capture.
+        #
+        # @param payment_session [Spree::PaymentSessions::PaypalMerchant] an express session
+        # @param paypal_order [Hash] its approved PayPal order, as JSON
+        # @raise [Spree::Core::GatewayError] when Spree refuses the address, or
+        #   the delivery chosen in PayPal is not offered for it
+        #
+        def apply_express_details!(payment_session, paypal_order)
+          ApplyExpressDetails.new(owner: payment_session.owner, paypal_order: paypal_order).call
+          payment_session.owner.reload
+        rescue StandardError
+          payment_session.fail if payment_session.can_fail?
+          raise
         end
 
         ##
