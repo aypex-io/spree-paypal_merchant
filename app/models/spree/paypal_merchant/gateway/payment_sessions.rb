@@ -82,16 +82,25 @@ module Spree
         # Also requests a Card Fields client token. Failure is non-fatal —
         # the wallet / Apple Pay buttons still work without it.
         #
+        # An express session (+external_data+ +express+ is +true+) creates an
+        # order the buyer completes in PayPal's popup: PayPal collects the
+        # address, and the cart's delivery rates are its shipping options. The
+        # session keeps +express: true+ ({Spree::PaymentSessions::PaypalMerchant#express?}).
+        # Nothing else the client sends is stored.
+        #
         # @param order [Spree::Cart, Spree::Order] the session's owner; a cart during checkout
         # @param amount [Numeric, NilClass] defaults to the owner's total less store credits
+        # @param external_data [Hash, ActionController::Parameters] read for +express+ only,
+        #   under a string or symbol key
         # @return [Spree::PaymentSessions::PaypalMerchant]
         # @raise [Spree::Core::GatewayError] when nothing is due, this method is
         #   set to capture later, the owner has already paid with PayPal, or
         #   PayPal fails
         #
-        def create_payment_session(order:, amount: nil, **_unused)
+        def create_payment_session(order:, amount: nil, external_data: {}, **_unused)
           owner = order
           total = amount.presence || owner.total_minus_store_credits
+          express = express_requested?(external_data)
 
           raise Spree::Core::GatewayError, 'PayPal cannot take a payment of zero' unless total.to_d.positive?
 
@@ -100,7 +109,7 @@ module Spree
           protect_from_error do
             retire_open_sessions(owner)
 
-            order_presenter = OrderPresenter.new(owner, amount: total)
+            order_presenter = OrderPresenter.new(owner, amount: total, express: express)
             paypal_response = client.orders.create_order(order_presenter.to_json)
 
             session_data = paypal_response.data.as_json
@@ -112,6 +121,7 @@ module Spree
             session_data['client_id'] = preferred_client_id
             session_data['enable_apple_pay'] = apple_pay_enabled?
             session_data['enable_card_fields'] = card_fields_enabled?
+            session_data['express'] = true if express
 
             if card_fields_enabled?
               client_token = generate_client_token
@@ -141,7 +151,7 @@ module Spree
         #
         # +external_data+ is ignored. The gem writes every key the storefront
         # reads (+id+, +status+, +client_id+, +client_token+,
-        # +enable_apple_pay+, +enable_card_fields+), and settlement reads
+        # +enable_apple_pay+, +enable_card_fields+, +express+), and settlement reads
         # PayPal's own order (+purchase_units+, +payment_source+), so no key
         # is the client's to write.
         #
@@ -385,6 +395,20 @@ module Spree
 
           raise Spree::Core::GatewayError,
                 "PayPal captures at checkout; capture method #{capture_method} is not supported"
+        end
+
+        ##
+        # Whether the storefront asked for an express session: +express+ is
+        # the boolean +true+. The Store API passes JSON, so the key is a
+        # string; a Ruby caller may use a symbol.
+        #
+        # @param external_data [Hash, ActionController::Parameters, NilClass]
+        # @return [TrueClass, FalseClass]
+        #
+        def express_requested?(external_data)
+          return false if external_data.blank?
+
+          (external_data['express'] || external_data[:express]) == true
         end
 
         ##

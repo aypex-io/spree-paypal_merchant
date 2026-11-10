@@ -14,12 +14,18 @@ module Spree
     # `additional_tax_total` — sending full `tax_total` double-counts
     # included VAT and trips PayPal `AMOUNT_MISMATCH`.
     #
+    # An express order is the exception: the buyer picks the address and the
+    # delivery in PayPal's popup. It asks PayPal to collect the address
+    # (`GET_FROM_FILE`), sends none of its own, and offers the cart's delivery
+    # rates as PayPal shipping options ({#shipping_options}).
+    #
     # Every amount is written the way PayPal reads it: exactly the currency's
     # decimal places (`Spree::Money::Rounding.format`), so a yen amount has
     # none and a dinar amount has three.
     #
     class OrderPresenter
       PAYPAL_ITEM_NAME_MAX_LENGTH = 127
+      PAYPAL_SHIPPING_LABEL_MAX_LENGTH = 127
       BREAKDOWN_FIELDS = %i[item_total shipping handling tax_total shipping_discount discount].freeze
 
       ##
@@ -28,10 +34,13 @@ module Spree
       # @param amount [Numeric, NilClass] what PayPal should charge; defaults to
       #   the owner's total. Less than the total when a gift card or store credit
       #   pays part of it.
+      # @param express [Boolean] an express order: the buyer picks the address
+      #   and the delivery in PayPal rather than in the storefront
       #
-      def initialize(owner, amount: nil)
+      def initialize(owner, amount: nil, express: false)
         @owner = owner
         @amount = amount
+        @express = express
       end
 
       attr_reader :owner
@@ -49,20 +58,55 @@ module Spree
         }
       end
 
+      ##
+      # What PayPal charges, with the breakdown it checks the charge against
+      # when one can be sent (see {#purchase_unit}). An update of an express
+      # order's amount sends the same.
+      #
+      # @return [PaypalServerSdk::AmountWithBreakdown]
+      #
+      def purchase_amount
+        value = format_amount(charge_amount)
+        return PaypalServerSdk::AmountWithBreakdown.new(currency_code: currency_code, value: value) if amount_alone?
+
+        PaypalServerSdk::AmountWithBreakdown.new(currency_code: currency_code, value: value, breakdown: breakdown)
+      end
+
+      ##
+      # The delivery choices an express order offers in PayPal's popup: the
+      # rates of the cart's one fulfillment, the selected rate selected. Each
+      # is keyed on its delivery method's prefixed id, which outlives the rate:
+      # Spree recreates rates whenever it rebuilds the cart's delivery.
+      #
+      # PayPal checks the selected option against the breakdown's shipping and
+      # refuses the order when they differ, so there are none unless the
+      # breakdown is sent and the selected rate is what it charges for
+      # delivery. There are none either when the cart has no rate selected, or
+      # is split across fulfillments (PayPal's options are one list for the
+      # order). With none, PayPal offers no choice, and the cart's own delivery
+      # is what is charged.
+      #
+      # @return [Array<PaypalServerSdk::ShippingOption>] always empty unless express
+      #
+      def shipping_options
+        @shipping_options ||= express? ? offered_shipping_options : []
+      end
+
       private
+
+      def express?
+        @express == true
+      end
 
       def purchase_unit
         # PayPal accepts an amount on its own. That is all we send when the
         # breakdown and items can't describe the charge: a gift card or store
         # credit pays part of the order (they always sum to the full total), or
         # the breakdown doesn't add up to the amount (PayPal would refuse it).
-        args =
-          if amount_alone?
-            { amount: PaypalServerSdk::AmountWithBreakdown.new(currency_code: currency_code,
-                                                               value: format_amount(charge_amount)) }
-          else
-            { amount: amount_with_breakdown, items: items }
-          end
+        # An express order counts the gift card or store credit as a discount
+        # instead ({#credit_discount}), so only the second applies to it.
+        args = { amount: purchase_amount }
+        args[:items] = items unless amount_alone?
         args[:shipping] = shipping_details if shipping_details
 
         PaypalServerSdk::PurchaseUnitRequest.new(**args)
@@ -81,15 +125,7 @@ module Spree
       end
 
       def amount_alone?
-        partial_charge? || !breakdown_balances?
-      end
-
-      def amount_with_breakdown
-        PaypalServerSdk::AmountWithBreakdown.new(
-          currency_code: currency_code,
-          value: format_amount(owner.total),
-          breakdown: breakdown
-        )
+        (partial_charge? && !express?) || !breakdown_balances?
       end
 
       # NOTE: the breakdown only sends additional (non-included) tax — sending
@@ -102,7 +138,7 @@ module Spree
           handling: handling,
           tax_total: paypal_money(owner.additional_tax_total),
           shipping_discount: shipping_discount,
-          discount: paypal_money(line_item_discount_rows_total)
+          discount: paypal_money(line_item_discount_rows_total + credit_discount)
         )
       end
 
@@ -116,7 +152,15 @@ module Spree
 
         charges = %i[item_total shipping handling tax_total].sum { |field| breakdown_value(field) }
         discounts = %i[shipping_discount discount].sum { |field| breakdown_value(field) }
-        charges - discounts == format_amount(owner.total).to_d
+        charges - discounts == format_amount(charge_amount).to_d
+      end
+
+      # What a gift card or store credit pays, which an express order counts as
+      # a discount so the breakdown adds up to the part PayPal charges: an
+      # express order needs its breakdown, which PayPal checks the selected
+      # shipping option against. Any other order sends the amount alone instead.
+      def credit_discount
+        express? ? owner.total.to_d - charge_amount.to_d : 0
       end
 
       def breakdown_value(field)
@@ -195,6 +239,8 @@ module Spree
       end
 
       def shipping_details
+        return express_shipping_details if express?
+
         address = owner.ship_address
         return nil if address.blank?
 
@@ -208,6 +254,40 @@ module Spree
             admin_area_1: region_code(address),
             postal_code: address.postal_code
           )
+        )
+      end
+
+      # An express order sends no address (PayPal collects it), only the
+      # delivery choices, when there are any.
+      def express_shipping_details
+        PaypalServerSdk::ShippingDetails.new(options: shipping_options) if shipping_options.any?
+      end
+
+      def offered_shipping_options
+        return [] unless breakdown_balances?
+
+        rates = delivery_rates
+        selected_rate = rates.find(&:selected?)
+        return [] unless selected_rate && format_amount(selected_rate.cost).to_d == breakdown_value(:shipping)
+
+        rates.map { |rate| shipping_option(rate, selected: rate.equal?(selected_rate)) }
+      end
+
+      # The rates of the owner's fulfillment; none unless it has exactly one.
+      def delivery_rates
+        fulfillments = owner.fulfillments.to_a
+        return [] unless fulfillments.one?
+
+        fulfillments.first.delivery_rates.includes(:delivery_method).to_a
+      end
+
+      def shipping_option(rate, selected:)
+        PaypalServerSdk::ShippingOption.new(
+          id: rate.delivery_method.prefixed_id,
+          label: rate.name.to_s[0...PAYPAL_SHIPPING_LABEL_MAX_LENGTH],
+          type: PaypalServerSdk::ShippingType::SHIPPING,
+          amount: paypal_money(rate.cost),
+          selected: selected
         )
       end
 
@@ -228,7 +308,9 @@ module Spree
       end
 
       def shipping_preference
-        if owner.ship_address.present?
+        if express?
+          PaypalServerSdk::PaypalWalletContextShippingPreference::GET_FROM_FILE
+        elsif owner.ship_address.present?
           PaypalServerSdk::PaypalWalletContextShippingPreference::SET_PROVIDED_ADDRESS
         else
           PaypalServerSdk::PaypalWalletContextShippingPreference::NO_SHIPPING

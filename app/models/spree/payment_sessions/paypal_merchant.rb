@@ -62,6 +62,17 @@ module Spree
     end
 
     ##
+    # Whether the session is for express checkout: the buyer picks the
+    # address and the delivery in PayPal's popup. Set when the session is
+    # created, and only by the boolean +true+.
+    #
+    # @return [TrueClass, FalseClass]
+    #
+    def express?
+      external_data&.dig('express') == true
+    end
+
+    ##
     # @return [Hash, NilClass]
     #
     def paypal_payer
@@ -94,9 +105,9 @@ module Spree
 
     ##
     # Stores a PayPal order read from PayPal on the session. The order's own
-    # fields replace the stored ones; the keys the storefront put there
-    # (+client_token+, +enable_apple_pay+, +enable_card_fields+) stay, because
-    # the session can still be open when it is stored.
+    # fields replace the stored ones; the keys the gem put there for the
+    # storefront (+client_token+, +enable_apple_pay+, +enable_card_fields+,
+    # +express+) stay, because the session can still be open when it is stored.
     #
     # @param paypal_order [Hash] a PayPal order as JSON
     # @return [void]

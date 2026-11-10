@@ -177,6 +177,39 @@ RSpec.describe Spree::PaymentSessions::PaypalMerchant do
     end
   end
 
+  describe '#express?' do
+    it 'is true when the session was created for express checkout' do
+      session = create(:paypal_merchant_payment_session, external_data: created_data.merge('express' => true))
+
+      expect(session.reload.express?).to be true
+    end
+
+    it 'is false for an ordinary session' do
+      session = create(:paypal_merchant_payment_session, external_data: created_data)
+
+      expect(session.express?).to be false
+    end
+
+    it 'is false for anything but the boolean true' do
+      session = create(:paypal_merchant_payment_session, external_data: created_data.merge('express' => 'true'))
+
+      expect(session.express?).to be false
+    end
+
+    it 'is false with no external data' do
+      expect(build(:paypal_merchant_payment_session, external_data: nil).express?).to be false
+    end
+
+    # Completing an express session reads PayPal's order onto the session first.
+    it 'stays true once the PayPal order is stored' do
+      session = create(:paypal_merchant_payment_session, external_data: created_data.merge('express' => true))
+
+      session.store_paypal_order!(captured_data)
+
+      expect(session.reload.express?).to be true
+    end
+  end
+
   describe '#settle_payment!' do
     it 'creates one payment on the cart' do
       payment = session.settle_payment!(captured: true)

@@ -109,7 +109,7 @@ RSpec.describe Spree::PaypalMerchant::Gateway::PaymentSessions do
     it 'sends the cart to PayPal for the amount due' do
       gateway.create_payment_session(order: cart)
 
-      expect(Spree::PaypalMerchant::OrderPresenter).to have_received(:new).with(cart, amount: cart.total_minus_store_credits)
+      expect(Spree::PaypalMerchant::OrderPresenter).to have_received(:new).with(cart, amount: cart.total_minus_store_credits, express: false)
     end
 
     it 'keeps the keys the storefront reads in external_data' do
@@ -130,6 +130,40 @@ RSpec.describe Spree::PaypalMerchant::Gateway::PaymentSessions do
       session = gateway.create_payment_session(order: cart)
 
       expect(session.external_data['client_id']).to eq('sandbox-client-id')
+    end
+
+    it 'creates an express order for an express session' do
+      session = gateway.create_payment_session(order: cart, external_data: { 'express' => true })
+
+      expect(Spree::PaypalMerchant::OrderPresenter).to have_received(:new).with(cart, amount: anything, express: true)
+      expect(session.reload.express?).to be(true)
+    end
+
+    it 'creates a normal order by default' do
+      session = gateway.create_payment_session(order: cart)
+
+      expect(Spree::PaypalMerchant::OrderPresenter).to have_received(:new).with(cart, amount: anything, express: false)
+      expect(session.reload.express?).to be(false)
+    end
+
+    it 'reads the express flag under a symbol key' do
+      gateway.create_payment_session(order: cart, external_data: { express: true })
+
+      expect(Spree::PaypalMerchant::OrderPresenter).to have_received(:new).with(cart, amount: anything, express: true)
+    end
+
+    it 'reads the express flag as the Store API passes it' do
+      gateway.create_payment_session(order: cart, external_data: ActionController::Parameters.new('express' => true).permit(:express))
+
+      expect(Spree::PaypalMerchant::OrderPresenter).to have_received(:new).with(cart, amount: anything, express: true)
+    end
+
+    it 'stores nothing else the client sends' do
+      captured = { 'purchase_units' => [{ 'payments' => { 'captures' => [{ 'id' => 'FAKE', 'status' => 'COMPLETED' }] } }] }
+
+      session = gateway.create_payment_session(order: cart, external_data: captured.merge('express' => true))
+
+      expect(session.reload.paypal_capture).to be_nil
     end
 
     context 'when the cart belongs to a guest' do
