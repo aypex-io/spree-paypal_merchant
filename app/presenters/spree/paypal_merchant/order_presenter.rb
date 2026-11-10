@@ -74,17 +74,18 @@ module Spree
 
       ##
       # The delivery choices an express order offers in PayPal's popup: the
-      # rates of the cart's one fulfillment, the selected rate selected. Each
-      # is keyed on its delivery method's prefixed id, which outlives the rate:
-      # Spree recreates rates whenever it rebuilds the cart's delivery.
+      # priced rates of the cart's one fulfillment, the selected rate
+      # selected. Each is keyed on its delivery method's prefixed id, which
+      # outlives the rate: Spree recreates rates whenever it rebuilds the
+      # cart's delivery. A rate with no price yet is left out.
       #
       # PayPal checks the selected option against the breakdown's shipping and
       # refuses the order when they differ, so there are none unless the
       # breakdown is sent and the selected rate is what it charges for
-      # delivery. There are none either when the cart has no rate selected, or
-      # is split across fulfillments (PayPal's options are one list for the
-      # order). With none, PayPal offers no choice, and the cart's own delivery
-      # is what is charged.
+      # delivery. There are none either when the cart has no rate selected, its
+      # selected rate has no price yet, or it is split across fulfillments
+      # (PayPal's options are one list for the order). With none, PayPal offers
+      # no choice, and the cart's own delivery is what is charged.
       #
       # @return [Array<PaypalServerSdk::ShippingOption>] always empty unless express
       #
@@ -147,8 +148,14 @@ module Spree
       # refuses the order when they differ; it also refuses a negative figure.
       # Spree's own totals add up, so this only fails when a total is out of
       # step with the rest.
+      #
+      # PayPal also refuses a discount bigger than the item total, which is why
+      # a free-shipping discount goes in `shipping_discount`. An express
+      # order's discount carries the gift card or store credit, which can be
+      # bigger than the goods, so there it counts as not balancing.
       def breakdown_balances?
         return false if BREAKDOWN_FIELDS.any? { |field| breakdown_value(field).negative? }
+        return false if express? && breakdown_value(:discount) > breakdown_value(:item_total)
 
         charges = %i[item_total shipping handling tax_total].sum { |field| breakdown_value(field) }
         discounts = %i[shipping_discount discount].sum { |field| breakdown_value(field) }
@@ -268,9 +275,15 @@ module Spree
 
         rates = delivery_rates
         selected_rate = rates.find(&:selected?)
-        return [] unless selected_rate && format_amount(selected_rate.cost).to_d == breakdown_value(:shipping)
+        return [] unless selected_rate && priced?(selected_rate) && format_amount(selected_rate.cost).to_d == breakdown_value(:shipping)
 
-        rates.map { |rate| shipping_option(rate, selected: rate.equal?(selected_rate)) }
+        rates.select { |rate| priced?(rate) }.map { |rate| shipping_option(rate, selected: rate.equal?(selected_rate)) }
+      end
+
+      # A rate with no price yet (freight quoted after review, or no cost at
+      # all) is left out: PayPal would offer it as free.
+      def priced?(rate)
+        !rate.cost.nil? && !rate.unpriced?
       end
 
       # The rates of the owner's fulfillment; none unless it has exactly one.

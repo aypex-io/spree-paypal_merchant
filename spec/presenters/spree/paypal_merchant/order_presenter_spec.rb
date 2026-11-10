@@ -519,6 +519,43 @@ RSpec.describe Spree::PaypalMerchant::OrderPresenter do
       expect([amount.value, sum, value.call(:discount) >= 10]).to eq([format('%.2f', cart.total - 10), (cart.total - 10).to_d, true])
     end
 
+    # 15.00 of the 20.00 total paid by credit is a discount bigger than the
+    # 10.00 of goods, which PayPal refuses.
+    context 'when a gift card or store credit is larger than the item total' do
+      subject { described_class.new(cart, amount: cart.total - 15, express: true) }
+
+      # Compared as plain values: a failing match on the SDK's objects raises
+      # inside the SDK instead of reporting the difference.
+      it 'sends the amount alone and no options' do
+        expect([amount.breakdown.nil?, subject.shipping_options.map(&:id), amount.value]).to eq([true, [], format('%.2f', cart.total - 15)])
+      end
+    end
+
+    # Freight quoted after review has no price yet: PayPal would show it as free.
+    context 'when a rate the buyer has not chosen is unpriced' do
+      before { delivery_rates.find_by(selected: false).update_columns(unpriced: true, cost: 0) } # rubocop:disable Rails/SkipsModelValidations
+
+      it 'offers only the priced rates' do
+        expect(options.map(&:id)).to eq([delivery_rates.find_by(selected: true).delivery_method.prefixed_id])
+      end
+    end
+
+    context 'when a rate the buyer has not chosen has no cost' do
+      before { delivery_rates.find_by(selected: false).update_columns(cost: nil) } # rubocop:disable Rails/SkipsModelValidations
+
+      it 'offers only the priced rates' do
+        expect(options.map(&:id)).to eq([delivery_rates.find_by(selected: true).delivery_method.prefixed_id])
+      end
+    end
+
+    context 'when the selected rate is unpriced' do
+      before { delivery_rates.find_by(selected: true).update_columns(unpriced: true) } # rubocop:disable Rails/SkipsModelValidations
+
+      it 'offers no options' do
+        expect(subject.shipping_options.map(&:id)).to eq([])
+      end
+    end
+
     # Tax moved without the total following it. Delivery still matches the
     # selected rate, so only the balance keeps the options out.
     context 'when the breakdown cannot balance' do
