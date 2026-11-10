@@ -10,13 +10,15 @@
   cart's delivery rates (the option id is the delivery method's prefixed id).
   Gift card and store credit count in the breakdown's discount; unpriced rates
   are left out; if the breakdown can't balance, the order carries the amount
-  alone with no options.
+  alone with no options. PayPal takes at most 10 options, so a cart with more
+  rates offers the selected rate and the first 9 others, cheapest first.
 - `complete_payment_session` on an uncaptured express order writes PayPal's
   shipping name and address (as ship and bill address), the payer's email (if
   the cart has none) and phone onto the cart, and re-selects the delivery the
-  buyer chose in PayPal, atomically under the cart's row lock and skipped when
-  already applied. The amount check and capture follow. A refusal fails the
-  session with nothing captured.
+  buyer chose in PayPal (or, when PayPal offered no choice, the delivery the
+  cart had, if the address is still offered it), atomically under the cart's
+  row lock and skipped when already applied. The amount check and capture
+  follow. A refusal fails the session with nothing captured.
 
   If a store requires a phone number on addresses and the buyer's PayPal account
   has none, express completion fails after approval. Such stores should not

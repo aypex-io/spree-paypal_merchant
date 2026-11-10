@@ -587,6 +587,40 @@ RSpec.describe Spree::PaypalMerchant::OrderPresenter do
       end
     end
 
+    # PayPal takes at most 10 options and refuses an order with more. Rates
+    # come cheapest first: 10.00, 15.00, then 16.00 to 26.00.
+    context 'when the cart has more than 10 delivery rates' do
+      before do
+        (16..26).each do |amount|
+          create(:delivery_method, store: cart.store).calculator.tap do |calculator|
+            calculator.preferred_amount = amount
+            calculator.preferred_currency = cart.currency
+            calculator.save!
+          end
+        end
+        cart.rebuild_fulfillments!
+        cart.set_fulfillments_cost
+        cart.recalculate_totals!
+      end
+
+      def method_ids(rates)
+        rates.map { |rate| rate.delivery_method.prefixed_id }
+      end
+
+      it 'offers the first 10' do
+        expect([delivery_rates.size, options.map(&:id)]).to eq([13, method_ids(delivery_rates.first(10))])
+      end
+
+      it 'keeps the selected rate, with the first 9 others' do
+        fulfillment = cart.fulfillments.sole
+        fulfillment.selected_delivery_rate_id = delivery_rates.last.id
+        cart.recalculate_totals!
+
+        expect([options.map(&:id), options.find(&:selected)&.id])
+          .to eq([method_ids(delivery_rates.first(9) + [delivery_rates.last]), delivery_rates.last.delivery_method.prefixed_id])
+      end
+    end
+
     # PayPal's options are one list for the whole order.
     context 'when the cart is split across two fulfillments' do
       before do

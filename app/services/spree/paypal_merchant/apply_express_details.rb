@@ -16,7 +16,10 @@ module Spree
     # afterwards, by delivery method: an option's id is its delivery method's
     # prefixed id ({OrderPresenter#shipping_options}), while delivery rates
     # are recreated by every quote. A PayPal order with no options offered no
-    # choice, and the cart keeps the delivery Spree selected.
+    # choice, and its amount was priced with the cart's own delivery, so that
+    # delivery is selected again, where the new address is still offered it.
+    # Where it is not, Spree's default stays, and the gateway's amount check
+    # decides.
     #
     # The address and the delivery are written together, holding the cart's
     # row lock, or not at all: a refusal rolls the address back, and no other
@@ -54,8 +57,9 @@ module Spree
         owner.with_lock do
           next if already_written?
 
+          kept_delivery_method = selected_delivery_method
           write_address
-          select_chosen_delivery
+          shipping_options.empty? ? keep_delivery(kept_delivery_method) : select_chosen_delivery
         end
       end
 
@@ -155,16 +159,35 @@ module Spree
         Spree::IsoData.subdivision_code(country.iso, region) if country&.states_required?
       end
 
-      def select_chosen_delivery
-        return if shipping_options.empty?
+      # The cart's delivery method, read before the address is written.
+      def selected_delivery_method
+        sole_fulfillment&.selected_delivery_rate&.delivery_method
+      end
 
+      def select_chosen_delivery
+        raise Spree::Core::GatewayError, DELIVERY_UNAVAILABLE_MESSAGE unless select_delivery(chosen_option_id)
+      end
+
+      # PayPal offered no choice: the delivery the cart had before, if the
+      # new address is still offered it.
+      def keep_delivery(delivery_method)
+        select_delivery(delivery_method.prefixed_id) if delivery_method
+      end
+
+      # Selects the rate of the delivery method an option names, on the cart
+      # as the address left it.
+      #
+      # @return [Spree::DeliveryRate, NilClass] the rate, or nil when the
+      #   method is not offered
+      def select_delivery(option_id)
         owner.reload
         fulfillment = sole_fulfillment
-        rate = fulfillment && rate_for_option(fulfillment, chosen_option_id)
-        raise Spree::Core::GatewayError, DELIVERY_UNAVAILABLE_MESSAGE if rate.nil?
+        rate = fulfillment && rate_for_option(fulfillment, option_id)
+        return if rate.nil?
 
         fulfillment.selected_delivery_rate_id = rate.id
         owner.recalculate_totals!
+        rate
       end
 
       # PayPal's options are one list for the order, so the gem offers them

@@ -42,6 +42,23 @@ RSpec.describe Spree::PaypalMerchant::ApplyExpressDetails do
     described_class.new(owner: cart, paypal_order: paypal_order).call
   end
 
+  # The cart's delivery as the buyer chose it before opening PayPal.
+  def select_delivery(delivery_method)
+    fulfillment = cart.fulfillments.sole
+    fulfillment.selected_delivery_rate_id = fulfillment.delivery_rates.find_by!(delivery_method: delivery_method).id
+    cart.recalculate_totals!
+  end
+
+  # PayPal got the amount alone (a credit larger than the goods, say), so it
+  # offered no delivery choice.
+  def without_paypal_options
+    paypal_order['purchase_units'][0]['shipping'].delete('options')
+  end
+
+  def selected_delivery_method
+    cart.reload.fulfillments.sole.selected_delivery_rate.delivery_method
+  end
+
   describe '#call' do
     let(:written) do
       {
@@ -92,6 +109,17 @@ RSpec.describe Spree::PaypalMerchant::ApplyExpressDetails do
         expect { apply }.to raise_error(Spree::Core::GatewayError)
 
         expect(cart_state).to eq(before_refusal)
+      end
+
+      # With no choice in PayPal, its amount was priced with the cart's own
+      # delivery, which the new address would put back to Spree's default.
+      it "keeps the cart's delivery when PayPal offered no choice" do
+        without_paypal_options
+        select_delivery(express_delivery)
+
+        apply
+
+        expect(selected_delivery_method).to eq(express_delivery)
       end
     end
 
@@ -151,11 +179,25 @@ RSpec.describe Spree::PaypalMerchant::ApplyExpressDetails do
 
     # The breakdown could not carry the options, so PayPal offered no choice.
     it "keeps Spree's delivery when PayPal offered no choice" do
-      paypal_order['purchase_units'][0]['shipping'].delete('options')
+      without_paypal_options
 
       apply
 
-      expect(cart.reload.fulfillments.sole.selected_delivery_rate.delivery_method).to eq(standard_delivery)
+      expect(selected_delivery_method).to eq(standard_delivery)
+    end
+
+    # The cart's delivery reaches only the state it was in. Spree's default
+    # stays, and the gateway's amount check refuses what PayPal would charge.
+    it "leaves Spree's default when PayPal offered no choice and the cart's delivery is not offered for PayPal's address" do
+      without_paypal_options
+      select_delivery(express_delivery)
+      zone = create(:delivery_zone, store: cart.store, delivery_profile: express_delivery.delivery_profile)
+      create(:delivery_zone_member, delivery_zone: zone, member_type: 'state', country_code: 'US', state_code: cart.ship_address.state_code)
+      express_delivery.update!(delivery_zone: zone)
+
+      apply
+
+      expect([cart.reload.ship_address.state_code, selected_delivery_method]).to eq(['CA', standard_delivery])
     end
 
     it 'refuses an address Spree does not accept' do

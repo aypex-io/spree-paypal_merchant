@@ -26,6 +26,7 @@ module Spree
     class OrderPresenter
       PAYPAL_ITEM_NAME_MAX_LENGTH = 127
       PAYPAL_SHIPPING_LABEL_MAX_LENGTH = 127
+      PAYPAL_SHIPPING_OPTIONS_MAX = 10
       BREAKDOWN_FIELDS = %i[item_total shipping handling tax_total shipping_discount discount].freeze
 
       ##
@@ -77,7 +78,10 @@ module Spree
       # priced rates of the cart's one fulfillment, the selected rate
       # selected. Each is keyed on its delivery method's prefixed id, which
       # outlives the rate: Spree recreates rates whenever it rebuilds the
-      # cart's delivery. A rate with no price yet is left out.
+      # cart's delivery. A rate with no price yet is left out. PayPal takes
+      # at most 10 options and refuses an order with more, so a cart with
+      # more rates offers the selected one and the first 9 others, in rate
+      # order (cheapest first).
       #
       # PayPal checks the selected option against the breakdown's shipping and
       # refuses the order when they differ, so there are none unless the
@@ -277,7 +281,16 @@ module Spree
         selected_rate = rates.find(&:selected?)
         return [] unless selected_rate && priced?(selected_rate) && format_amount(selected_rate.cost).to_d == breakdown_value(:shipping)
 
-        rates.select { |rate| priced?(rate) }.map { |rate| shipping_option(rate, selected: rate.equal?(selected_rate)) }
+        offered_rates(rates.select { |rate| priced?(rate) }, selected_rate).map do |rate|
+          shipping_option(rate, selected: rate.equal?(selected_rate))
+        end
+      end
+
+      # The selected rate and the first others, as many as PayPal takes, in
+      # the order given.
+      def offered_rates(rates, selected_rate)
+        others = rates.reject { |rate| rate.equal?(selected_rate) }.first(PAYPAL_SHIPPING_OPTIONS_MAX - 1)
+        rates.select { |rate| rate.equal?(selected_rate) || others.any? { |other| other.equal?(rate) } }
       end
 
       # A rate with no price yet (freight quoted after review, or no cost at
