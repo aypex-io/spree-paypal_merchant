@@ -478,7 +478,7 @@ RSpec.describe Spree::PaypalMerchant::Gateway::PaymentSessions do
         update
 
         expect([patch_requests.sole['id'], sent_operations, payment_session.reload.amount])
-          .to eq([payment_session.external_id, [['replace', amount_path], ['replace', options_path]], due])
+          .to eq([payment_session.external_id, [['replace', amount_path], ['add', options_path]], due])
       end
 
       it 'sends the amount the cart owes, with its breakdown' do

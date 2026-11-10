@@ -136,7 +136,7 @@ RSpec.describe 'A PayPal session amount the client tries to change', type: :requ
         delivery_method = cart.fulfillments.sole.delivery_rates.sole.delivery_method
 
         expect([operations, amount['value'], options.pluck('id')])
-          .to eq([[['replace', "/purchase_units/@reference_id=='default'/amount"], ['replace', "/purchase_units/@reference_id=='default'/shipping/options"]],
+          .to eq([[['replace', "/purchase_units/@reference_id=='default'/amount"], ['add', "/purchase_units/@reference_id=='default'/shipping/options"]],
                   money(amount_due), [delivery_method.prefixed_id]])
       end
 

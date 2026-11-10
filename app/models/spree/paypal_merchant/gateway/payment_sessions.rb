@@ -447,6 +447,12 @@ module Spree
         # offers none when the breakdown cannot carry them); otherwise the
         # amount is sent alone, and it includes the cart's own delivery.
         #
+        # The amount is a +replace+: every order has one. The options are an
+        # +add+, because an order created before the cart had an address has
+        # no options yet, and JSON Patch's +replace+ needs the member to
+        # exist. An +add+ sets an object member whether or not it exists, and
+        # PayPal accepts both operations on +shipping.options+.
+        #
         # @param payment_session [Spree::PaymentSessions::PaypalMerchant] an express session
         # @param amount [Numeric, String, NilClass] checked against what is due
         # @return [NilClass]
@@ -462,8 +468,10 @@ module Spree
           raise Spree::Core::GatewayError, AMOUNT_CHANGE_MESSAGE if amount.present? && amount.to_d != due.to_d
 
           order_presenter = OrderPresenter.new(owner, amount: due, express: true)
-          operations = [paypal_replace(EXPRESS_AMOUNT_PATH, order_presenter.purchase_amount)]
-          operations << paypal_replace(EXPRESS_OPTIONS_PATH, order_presenter.shipping_options) if order_presenter.shipping_options.any?
+          operations = [paypal_patch(PaypalServerSdk::PatchOp::REPLACE, EXPRESS_AMOUNT_PATH, order_presenter.purchase_amount)]
+          if order_presenter.shipping_options.any?
+            operations << paypal_patch(PaypalServerSdk::PatchOp::ADD, EXPRESS_OPTIONS_PATH, order_presenter.shipping_options)
+          end
 
           protect_from_error { client.orders.patch_order('id' => payment_session.external_id, 'body' => operations) }
           payment_session.update!(amount: due)
@@ -472,12 +480,13 @@ module Spree
         end
 
         ##
+        # @param operation [String] a {PaypalServerSdk::PatchOp}
         # @param path [String] a JSON Patch path in a PayPal order
         # @param value [Object] what PayPal writes there
-        # @return [PaypalServerSdk::Patch] a +replace+ operation
+        # @return [PaypalServerSdk::Patch]
         #
-        def paypal_replace(path, value)
-          PaypalServerSdk::Patch.new(op: PaypalServerSdk::PatchOp::REPLACE, path: path, value: value)
+        def paypal_patch(operation, path, value)
+          PaypalServerSdk::Patch.new(op: operation, path: path, value: value)
         end
 
         ##
