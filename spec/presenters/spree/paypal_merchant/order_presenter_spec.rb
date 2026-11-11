@@ -464,4 +464,181 @@ RSpec.describe Spree::PaypalMerchant::OrderPresenter do
       end
     end
   end
+
+  # The buyer picks the address and the delivery in PayPal's popup, so the
+  # order offers the cart's delivery rates instead of pinning an address.
+  describe 'express' do
+    # Delivery at 10.00 (selected) or 15.00, on the cart's one fulfillment.
+    let(:cart) do
+      create(:cart_ready_for_delivery).tap do |cart|
+        create(:delivery_method, store: cart.store).calculator.tap do |calculator|
+          calculator.preferred_amount = 15
+          calculator.preferred_currency = cart.currency
+          calculator.save!
+        end
+        cart.rebuild_fulfillments!
+        cart.set_fulfillments_cost
+        cart.recalculate_totals!
+      end
+    end
+    let(:delivery_rates) { cart.fulfillments.sole.delivery_rates }
+    let(:options) { purchase_unit.shipping.options }
+
+    subject { described_class.new(cart, express: true) }
+
+    it 'asks PayPal to collect the address' do
+      expect([body.payment_source.paypal.experience_context.shipping_preference, purchase_unit.shipping&.address])
+        .to eq([PaypalServerSdk::PaypalWalletContextShippingPreference::GET_FROM_FILE, nil])
+    end
+
+    it "offers the cart's delivery rates as shipping options" do
+      selected = options.select(&:selected)
+
+      expect([options.map(&:id), selected.size, selected.first&.amount&.value])
+        .to eq([delivery_rates.map { |rate| rate.delivery_method.prefixed_id }, 1, breakdown.shipping.value])
+    end
+
+    it 'labels each option with its rate name, as shipping at the rate cost' do
+      expect(options.map { |option| [option.label, option.type, option.amount.value] }).to eq(
+        delivery_rates.map { |rate| [rate.name, PaypalServerSdk::ShippingType::SHIPPING, format('%.2f', rate.cost)] }
+      )
+    end
+
+    it 'cuts a long rate name to 127 characters' do
+      delivery_rates.each { |rate| rate.update_columns(name: 'A' * 200) } # rubocop:disable Rails/SkipsModelValidations
+
+      expect(options.map { |option| option.label.length }).to all(eq(127))
+    end
+
+    it 'counts a gift card or store credit as a discount' do
+      presenter = described_class.new(cart, amount: cart.total - 10, express: true)
+      amount = presenter.to_json['body'].purchase_units[0].amount
+      value = ->(field) { (amount.breakdown.public_send(field)&.value || 0).to_d }
+      sum = %i[item_total shipping handling tax_total].sum(&value) - %i[shipping_discount discount].sum(&value)
+
+      expect([amount.value, sum, value.call(:discount) >= 10]).to eq([format('%.2f', cart.total - 10), (cart.total - 10).to_d, true])
+    end
+
+    # 15.00 of the 20.00 total paid by credit is a discount bigger than the
+    # 10.00 of goods, which PayPal refuses.
+    context 'when a gift card or store credit is larger than the item total' do
+      subject { described_class.new(cart, amount: cart.total - 15, express: true) }
+
+      # Compared as plain values: a failing match on the SDK's objects raises
+      # inside the SDK instead of reporting the difference.
+      it 'sends the amount alone and no options' do
+        expect([amount.breakdown.nil?, subject.shipping_options.map(&:id), amount.value]).to eq([true, [], format('%.2f', cart.total - 15)])
+      end
+    end
+
+    # Freight quoted after review has no price yet: PayPal would show it as free.
+    context 'when a rate the buyer has not chosen is unpriced' do
+      before { delivery_rates.find_by(selected: false).update_columns(unpriced: true, cost: 0) } # rubocop:disable Rails/SkipsModelValidations
+
+      it 'offers only the priced rates' do
+        expect(options.map(&:id)).to eq([delivery_rates.find_by(selected: true).delivery_method.prefixed_id])
+      end
+    end
+
+    context 'when a rate the buyer has not chosen has no cost' do
+      before { delivery_rates.find_by(selected: false).update_columns(cost: nil) } # rubocop:disable Rails/SkipsModelValidations
+
+      it 'offers only the priced rates' do
+        expect(options.map(&:id)).to eq([delivery_rates.find_by(selected: true).delivery_method.prefixed_id])
+      end
+    end
+
+    context 'when the selected rate is unpriced' do
+      before { delivery_rates.find_by(selected: true).update_columns(unpriced: true) } # rubocop:disable Rails/SkipsModelValidations
+
+      it 'offers no options' do
+        expect(subject.shipping_options.map(&:id)).to eq([])
+      end
+    end
+
+    # Tax moved without the total following it. Delivery still matches the
+    # selected rate, so only the balance keeps the options out.
+    context 'when the breakdown cannot balance' do
+      before { cart.update_columns(additional_tax_total: 1) } # rubocop:disable Rails/SkipsModelValidations
+
+      it 'sends the amount alone and no options' do
+        expect([amount.breakdown, subject.shipping_options]).to eq([nil, []])
+      end
+    end
+
+    context 'when no delivery rate is selected' do
+      before { delivery_rates.update_all(selected: false) } # rubocop:disable Rails/SkipsModelValidations
+
+      it 'offers no options' do
+        expect(subject.shipping_options).to eq([])
+      end
+    end
+
+    # PayPal refuses a selected option that costs other than the breakdown's shipping.
+    context 'when the selected rate costs other than the delivery total' do
+      before { delivery_rates.find_by(selected: true).update_columns(cost: 12) } # rubocop:disable Rails/SkipsModelValidations
+
+      it 'offers no options' do
+        expect(subject.shipping_options).to eq([])
+      end
+
+      it 'sends no shipping details' do
+        expect(purchase_unit.shipping).to be_nil
+      end
+    end
+
+    # PayPal takes at most 10 options and refuses an order with more. Rates
+    # come cheapest first: 10.00, 15.00, then 16.00 to 26.00.
+    context 'when the cart has more than 10 delivery rates' do
+      before do
+        (16..26).each do |amount|
+          create(:delivery_method, store: cart.store).calculator.tap do |calculator|
+            calculator.preferred_amount = amount
+            calculator.preferred_currency = cart.currency
+            calculator.save!
+          end
+        end
+        cart.rebuild_fulfillments!
+        cart.set_fulfillments_cost
+        cart.recalculate_totals!
+      end
+
+      def method_ids(rates)
+        rates.map { |rate| rate.delivery_method.prefixed_id }
+      end
+
+      it 'offers the first 10' do
+        expect([delivery_rates.size, options.map(&:id)]).to eq([13, method_ids(delivery_rates.first(10))])
+      end
+
+      it 'keeps the selected rate, with the first 9 others' do
+        fulfillment = cart.fulfillments.sole
+        fulfillment.selected_delivery_rate_id = delivery_rates.last.id
+        cart.recalculate_totals!
+
+        expect([options.map(&:id), options.find(&:selected)&.id])
+          .to eq([method_ids(delivery_rates.first(9) + [delivery_rates.last]), delivery_rates.last.delivery_method.prefixed_id])
+      end
+    end
+
+    # PayPal's options are one list for the whole order.
+    context 'when the cart is split across two fulfillments' do
+      before do
+        create(:fulfillment, cart: cart, order: nil, tracking: nil)
+        cart.fulfillments.reset
+      end
+
+      it 'offers no options' do
+        expect(subject.shipping_options).to eq([])
+      end
+    end
+
+    it 'offers no options to an order that is not express' do
+      expect(described_class.new(cart).shipping_options).to eq([])
+    end
+
+    it 'leaves the address on an order that is not express' do
+      expect(described_class.new(cart).to_json['body'].purchase_units[0].shipping.address).not_to be_nil
+    end
+  end
 end

@@ -90,6 +90,78 @@ RSpec.describe 'A PayPal session amount the client tries to change', type: :requ
     end
   end
 
+  # An express session follows the cart: the storefront changes the cart's
+  # address or delivery, then asks for the PayPal order to match it. The gem's
+  # own SDK client sends the update; PayPal is stubbed at the HTTP level.
+  describe 'PATCH of an express session' do
+    include PaypalHttp
+
+    # Opened for the whole total, before the store credit was applied.
+    let(:payment_session) do
+      create(:paypal_merchant_payment_session, cart: cart, payment_method: gateway, amount: cart.reload.total, external_id: paypal_order_id,
+                                               external_data: fixture('paypal_order').merge('id' => paypal_order_id, 'express' => true))
+    end
+    let(:paypal_order_url) { "#{PaypalHttp::PAYPAL_API}/v2/checkout/orders/#{paypal_order_id}" }
+    # The JSON Patch documents PayPal was sent.
+    let(:sent_patches) { [] }
+
+    def patch_session(amount)
+      patch "/api/v3/store/carts/#{cart.prefixed_id}/payment_sessions/#{payment_session.prefixed_id}",
+            params: { amount: amount }, headers: bearer_headers, as: :json
+    end
+
+    before do
+      allow(PaypalServerSdk::Client).to receive(:new).and_call_original
+      stub_paypal_token
+      stub_request(:patch, %r{/v2/checkout/orders/}).to_return do |request|
+        sent_patches << JSON.parse(request.body)
+        { status: 204 }
+      end
+    end
+
+    context 'with the amount the cart owes' do
+      before { patch_session(money(amount_due)) }
+
+      it 'succeeds' do
+        expect(response).to have_http_status(:ok)
+      end
+
+      it 'patches the PayPal order once' do
+        expect(a_request(:patch, paypal_order_url)).to have_been_made.once
+      end
+
+      it "sends PayPal the cart's amount and delivery options" do
+        operations = sent_patches.sole.map { |operation| [operation['op'], operation['path']] }
+        amount, options = sent_patches.sole.pluck('value')
+        delivery_method = cart.fulfillments.sole.delivery_rates.sole.delivery_method
+
+        expect([operations, amount['value'], options.pluck('id')])
+          .to eq([[['replace', "/purchase_units/@reference_id=='default'/amount"], ['add', "/purchase_units/@reference_id=='default'/shipping/options"]],
+                  money(amount_due), [delivery_method.prefixed_id]])
+      end
+
+      it 'sets the session amount to the amount due' do
+        expect(json_response['amount'].to_d).to eq(amount_due)
+      end
+    end
+
+    context 'with an amount the cart does not owe' do
+      before { patch_session(money(cart.total)) }
+
+      it 'is refused as unprocessable' do
+        expect(response).to have_http_status(:unprocessable_content)
+      end
+
+      it 'tells the storefront why' do
+        expect(json_response.dig('error', 'message')).to match(/create a new payment session/)
+      end
+
+      it 'leaves the PayPal order alone' do
+        expect(a_request(:patch, %r{/v2/checkout/orders/})).not_to have_been_made
+      end
+    end
+  end
+
   # A session whose amount disagrees with PayPal's capture, such as one changed
   # before this release refused it.
   context 'when the session amount says the whole total but PayPal captured the amount due' do

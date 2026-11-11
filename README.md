@@ -67,11 +67,12 @@ the webhook address and events, and testing in the sandbox. The card's
 
 | Preference | Purpose |
 |---|---|
-| `client_id` / `client_secret` | REST app credentials from the PayPal Developer Dashboard |
+| `client_id` / `client_secret` | REST app credentials from the PayPal Developer Dashboard. `client_id` is public and sent to storefronts with the payment method; `client_secret` never is |
 | `webhook_secret` | PayPal webhook ID (used as the verify-webhook `webhook_id`) |
 | `test_mode` | Sandbox vs live |
 | `enable_apple_pay` | Offer Apple Pay on the storefront (default on) |
 | `enable_card_fields` | Offer Card Fields on the storefront (default on) |
+| `enable_express_checkout` | Offer PayPal express checkout (PayPal's button on the cart) on the storefront (default on). A storefront switch only: the gem exposes it but does not enforce it |
 
 Webhook URL is the standard Spree v3 payments webhook. PayPal only accepts an
 absolute `https://` URL:
@@ -171,6 +172,43 @@ bin/rails 'spree:paypal_merchant:sync_refunds[R123456789]'
    `payment_source.apple_pay` as
    `Spree::PaypalMerchant::PaymentSources::ApplePay`.
 4. Safari + HTTPS only.
+
+## Express checkout
+
+Express checkout lets a buyer pay from the cart: PayPal collects the shipping
+address and delivery choice, and the gem copies them onto the cart.
+
+- **Create.** `create_payment_session` with `external_data: { express: true }`
+  creates a PayPal order with `shipping_preference: GET_FROM_FILE`, so PayPal
+  asks for the address. Shipping options are built from the cart's delivery
+  rates; each option's id is the Spree delivery method's prefixed id. Gift card
+  and store credit amounts count as a discount in PayPal's breakdown. Rates
+  without a price are left out. PayPal takes at most 10 options, so a cart with
+  more rates offers the selected rate and the first 9 others, cheapest first.
+  If the breakdown can't balance, the order is created with the amount alone
+  and no shipping options.
+- **Update.** `update_payment_session` on a pending express session PATCHes the
+  PayPal order from the cart: the amount is replaced and the shipping options
+  are added. It refuses a session that isn't pending, a cart with no delivery,
+  and an amount the cart doesn't owe. Sessions that aren't express still refuse
+  amount changes.
+- **Complete.** `complete_payment_session` on an express order PayPal hasn't
+  captured writes PayPal's shipping name and address (as both ship and bill
+  address), the payer's email (only if the cart has none) and phone onto the
+  cart, and selects the delivery the buyer chose in PayPal. When PayPal offered
+  no choice, the delivery the cart had is selected again, if the address is
+  still offered it; otherwise Spree's default stays and the amount check
+  decides. This happens atomically under the cart's row lock and is skipped if
+  already applied. The existing amount check and the capture follow. If any
+  step refuses, the session fails and nothing is captured.
+- **Switch.** `enable_express_checkout` (default on) is exposed with the other
+  public preferences so a storefront can hide the button. The gem does not
+  enforce it.
+
+If your store requires a phone number on addresses and the buyer's PayPal
+account has none, express completion fails after the buyer has approved the
+payment. Such stores should not require a phone number, or should keep express
+checkout off.
 
 ## Upgrading from 5.2
 

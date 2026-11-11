@@ -61,6 +61,7 @@ credentials came from.
    | **Test Mode** | On for Sandbox credentials, off for Live. |
    | **Enable Apple Pay** | Offers Apple Pay at checkout. Needs [Apple Pay](#apple-pay) set up in PayPal. |
    | **Enable Card Fields** | Offers card payments at checkout. Needs **Advanced Credit and Debit Card Payments** from step 1. |
+   | **Enable Express Checkout** | Lets storefronts that support it offer PayPal on the cart, where PayPal collects the address. If your store requires a phone number on addresses, leave it off: a buyer whose PayPal account has no phone number would fail at the end of checkout. |
 
 4. Save. Spree doesn't check the Client ID and Secret with PayPal when you save.
    A wrong pair shows up at checkout, where PayPal fails to load, so always

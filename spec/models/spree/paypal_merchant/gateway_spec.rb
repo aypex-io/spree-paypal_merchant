@@ -67,6 +67,12 @@ RSpec.describe Spree::PaypalMerchant::Gateway do
       gateway.preferred_enable_card_fields = false
       expect(gateway.card_fields_enabled?).to be false
     end
+
+    it 'offers express checkout unless switched off' do
+      expect(gateway.express_checkout_enabled?).to be(true)
+      gateway.preferred_enable_express_checkout = false
+      expect(gateway.express_checkout_enabled?).to be(false)
+    end
   end
 
   it 'has no 5.x checkout flow' do

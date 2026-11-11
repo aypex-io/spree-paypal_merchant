@@ -109,7 +109,7 @@ RSpec.describe Spree::PaypalMerchant::Gateway::PaymentSessions do
     it 'sends the cart to PayPal for the amount due' do
       gateway.create_payment_session(order: cart)
 
-      expect(Spree::PaypalMerchant::OrderPresenter).to have_received(:new).with(cart, amount: cart.total_minus_store_credits)
+      expect(Spree::PaypalMerchant::OrderPresenter).to have_received(:new).with(cart, amount: cart.total_minus_store_credits, express: false)
     end
 
     it 'keeps the keys the storefront reads in external_data' do
@@ -130,6 +130,40 @@ RSpec.describe Spree::PaypalMerchant::Gateway::PaymentSessions do
       session = gateway.create_payment_session(order: cart)
 
       expect(session.external_data['client_id']).to eq('sandbox-client-id')
+    end
+
+    it 'creates an express order for an express session' do
+      session = gateway.create_payment_session(order: cart, external_data: { 'express' => true })
+
+      expect(Spree::PaypalMerchant::OrderPresenter).to have_received(:new).with(cart, amount: anything, express: true)
+      expect(session.reload.express?).to be(true)
+    end
+
+    it 'creates a normal order by default' do
+      session = gateway.create_payment_session(order: cart)
+
+      expect(Spree::PaypalMerchant::OrderPresenter).to have_received(:new).with(cart, amount: anything, express: false)
+      expect(session.reload.express?).to be(false)
+    end
+
+    it 'reads the express flag under a symbol key' do
+      gateway.create_payment_session(order: cart, external_data: { express: true })
+
+      expect(Spree::PaypalMerchant::OrderPresenter).to have_received(:new).with(cart, amount: anything, express: true)
+    end
+
+    it 'reads the express flag as the Store API passes it' do
+      gateway.create_payment_session(order: cart, external_data: ActionController::Parameters.new('express' => true).permit(:express))
+
+      expect(Spree::PaypalMerchant::OrderPresenter).to have_received(:new).with(cart, amount: anything, express: true)
+    end
+
+    it 'stores nothing else the client sends' do
+      captured = { 'purchase_units' => [{ 'payments' => { 'captures' => [{ 'id' => 'FAKE', 'status' => 'COMPLETED' }] } }] }
+
+      session = gateway.create_payment_session(order: cart, external_data: captured.merge('express' => true))
+
+      expect(session.reload.paypal_capture).to be_nil
     end
 
     context 'when the cart belongs to a guest' do
@@ -406,6 +440,132 @@ RSpec.describe Spree::PaypalMerchant::Gateway::PaymentSessions do
         update(external_data: client_data)
 
         expect(payment_session.reload.paypal_capture).to be_nil
+      end
+    end
+
+    # The buyer changes the address or the delivery in PayPal's popup, the
+    # storefront changes the cart to match, and the PayPal order follows the
+    # cart. Nothing in it comes from the client.
+    context 'when the session is express' do
+      # Delivery at 10.00, selected, on the cart's one fulfillment. The
+      # factory's delivery method delivers for the default store only.
+      let(:cart) { create(:cart_ready_for_delivery, customer: customer) }
+      let(:store) { cart.store }
+      let(:stored_data) { fixture('paypal_order').merge(storefront_keys, 'express' => true) }
+      let(:due) { cart.total_minus_store_credits }
+      # The session was created for an earlier address, which cost less to deliver to.
+      let(:earlier_amount) { due - 5 }
+      let(:delivery_rate) { cart.fulfillments.sole.delivery_rates.sole }
+      let(:amount_path) { "/purchase_units/@reference_id=='default'/amount" }
+      let(:options_path) { "/purchase_units/@reference_id=='default'/shipping/options" }
+      let(:patch_requests) { [] }
+
+      before do
+        payment_session.update!(amount: earlier_amount)
+        allow(orders_api).to receive(:patch_order) { |request| patch_requests << request }
+      end
+
+      # The operations PayPal was sent, as plain values.
+      def sent_operations
+        patch_requests.sole['body'].map { |patch| [patch.op, patch.path] }
+      end
+
+      def sent_value(path)
+        patch_requests.sole['body'].find { |patch| patch.path == path }.value
+      end
+
+      it "patches the PayPal order with the cart's amount and delivery options" do
+        update
+
+        expect([patch_requests.sole['id'], sent_operations, payment_session.reload.amount])
+          .to eq([payment_session.external_id, [['replace', amount_path], ['add', options_path]], due])
+      end
+
+      it 'sends the amount the cart owes, with its breakdown' do
+        update
+
+        expect([sent_value(amount_path).value, sent_value(amount_path).breakdown&.shipping&.value]).to eq([format('%.2f', due), '10.00'])
+      end
+
+      it "offers the cart's delivery rates, keyed on their delivery methods" do
+        update
+
+        expect(sent_value(options_path).map { |option| [option.id, option.selected, option.amount.value] })
+          .to eq([[delivery_rate.delivery_method.prefixed_id, true, '10.00']])
+      end
+
+      it 'accepts the amount the cart owes, as the API sends it' do
+        update(amount: format('%.2f', due))
+
+        expect(payment_session.reload.amount).to eq(due)
+      end
+
+      it 'refuses an amount the cart does not owe' do
+        expect { update(amount: due + 1) }.to raise_error(Spree::Core::GatewayError, /create a new payment session/)
+
+        expect(orders_api).not_to have_received(:patch_order)
+      end
+
+      it 'leaves the session amount as it was after a refusal' do
+        expect { update(amount: due + 1) }.to raise_error(Spree::Core::GatewayError)
+
+        expect(payment_session.reload.amount).to eq(earlier_amount)
+      end
+
+      # PayPal checks the selected option against the breakdown's shipping, so
+      # the presenter offers none here; the cart still delivers.
+      context "when the cart's delivery cannot be offered as a choice" do
+        before { delivery_rate.update_columns(cost: 12) } # rubocop:disable Rails/SkipsModelValidations
+
+        it 'patches the amount alone' do
+          update
+
+          expect(sent_operations).to eq([['replace', amount_path]])
+        end
+      end
+
+      context 'when the cart has no delivery for its address' do
+        before { Spree::DeliveryRate.where(fulfillment: cart.fulfillments).delete_all }
+
+        it 'refuses when the cart has no delivery for its address' do
+          expect { update }.to raise_error(Spree::Core::GatewayError, 'PayPal cannot be offered a delivery for this address')
+
+          expect(orders_api).not_to have_received(:patch_order)
+        end
+      end
+
+      context 'when the cart has no address yet' do
+        let(:cart) { create(:cart_with_line_items, customer: customer) }
+
+        it 'refuses, since nothing can be delivered' do
+          expect { update }.to raise_error(Spree::Core::GatewayError, 'PayPal cannot be offered a delivery for this address')
+
+          expect(orders_api).not_to have_received(:patch_order)
+        end
+      end
+
+      %w[processing completed failed canceled].each do |status|
+        context "when the session is #{status}" do
+          before { payment_session.update!(status: status) }
+
+          it 'refuses once the session is no longer pending' do
+            expect { update }.to raise_error(Spree::Core::GatewayError, 'This PayPal payment session can no longer change')
+
+            expect(orders_api).not_to have_received(:patch_order)
+          end
+        end
+      end
+
+      context 'when PayPal refuses the update' do
+        before do
+          allow(orders_api).to receive(:patch_order).and_raise(paypal_issue_error(422, 'PREFERRED_SHIPPING_OPTION_AMOUNT_MISMATCH'))
+        end
+
+        it 'raises a gateway error and leaves the session amount as it was' do
+          expect { update }.to raise_error(Spree::Core::GatewayError, /PayPal API error/)
+
+          expect(payment_session.reload.amount).to eq(earlier_amount)
+        end
       end
     end
   end
@@ -812,6 +972,108 @@ RSpec.describe Spree::PaypalMerchant::Gateway::PaymentSessions do
         expect { complete }.to raise_error(Spree::Core::GatewayError)
 
         expect(orders_api).not_to have_received(:capture_order)
+      end
+    end
+
+    # The buyer gave the address and chose the delivery in PayPal's popup, so
+    # the cart has only the partial address PayPal revealed before approval.
+    context 'when the session is express' do
+      # Delivery at 10.00 (Spree's default, selected) or 15.00, on the cart's
+      # one fulfillment. The items are priced as Spree prices them for an
+      # address, so PayPal's address changes the total only by the delivery.
+      let(:cart) do
+        create(:cart_ready_for_delivery, customer: customer).tap do |cart|
+          create(:delivery_method, store: cart.store).calculator.tap do |calculator|
+            calculator.preferred_amount = 15
+            calculator.preferred_currency = cart.currency
+            calculator.save!
+          end
+          cart.recalculate_for_address_change!(keep_selection: true)
+        end
+      end
+      let(:store) { cart.store }
+      let(:payment_session) do
+        create(:paypal_merchant_payment_session, cart: cart, payment_method: gateway, external_data: fixture('paypal_order').merge('express' => true))
+      end
+      # What the cart owes with the 15.00 delivery the buyer chose in PayPal.
+      let(:due) { cart.total - 10 + 15 }
+      let(:approved_order) do
+        fixture('approved_express_paypal_order').tap do |data|
+          data['id'] = payment_session.external_id
+          data['purchase_units'][0]['amount']['value'] = format('%.2f', due)
+          standard, express = data['purchase_units'][0]['shipping']['options']
+          standard['id'] = delivery_method_costing(10).prefixed_id
+          express['id'] = delivery_method_costing(15).prefixed_id
+        end
+      end
+      let(:captured) do
+        captured_order('COMPLETED').tap do |data|
+          data['purchase_units'][0]['amount']['value'] = format('%.2f', due)
+          data['purchase_units'][0]['payments']['captures'][0]['amount']['value'] = format('%.2f', due)
+        end
+      end
+
+      def delivery_method_costing(amount)
+        cart.fulfillments.sole.delivery_rates.find_by(cost: amount).delivery_method
+      end
+
+      it "captures an express order after writing PayPal's details" do
+        complete
+
+        expect(orders_api).to have_received(:capture_order).with('id' => payment_session.external_id, 'prefer' => 'return=representation')
+      end
+
+      it "settles the payment on the cart with PayPal's address" do
+        complete
+
+        expect([payment_session.reload.status, payments_on_cart.sole.amount, cart.reload.ship_address.address1]).to eq(['completed', due, '1 Example Way'])
+      end
+
+      # Another tab added an item after the buyer approved in PayPal.
+      it 'fails without capturing when the cart total moved after approval' do
+        create(:line_item, cart: cart, order: nil, price: 7)
+        cart.line_items.reload
+        cart.recalculate_totals!
+
+        expect { complete }.to raise_error(Spree::Core::GatewayError, /does not match the amount due/)
+
+        expect(orders_api).not_to have_received(:capture_order)
+        expect(payment_session.reload.status).to eq('failed')
+      end
+
+      it 'fails without capturing when the delivery chosen in PayPal is no longer offered' do
+        approved_order['purchase_units'][0]['shipping']['options'][1]['id'] = 'dm_withdrawn'
+
+        expect { complete }.to raise_error(Spree::Core::GatewayError, 'The delivery chosen in PayPal is not available for this address')
+
+        expect(orders_api).not_to have_received(:capture_order)
+        expect(payment_session.reload.status).to eq('failed')
+      end
+
+      context 'when a 503 hid a capture that went through' do
+        before { allow(orders_api).to receive(:capture_order).and_raise(paypal_api_error(503)) }
+
+        # The first confirm wrote the details and got the error; PayPal had
+        # captured, and the buyer confirms again.
+        def confirm_twice
+          expect { complete }.to raise_error(Spree::Core::GatewayError)
+          allow(orders_api).to receive(:get_order).and_return(paypal_response(captured))
+          allow(Spree::PaypalMerchant::ApplyExpressDetails).to receive(:new).and_call_original
+
+          gateway.complete_payment_session(payment_session: payment_session.reload)
+        end
+
+        it 'does not rewrite details on a retry after the capture' do
+          confirm_twice
+
+          expect(Spree::PaypalMerchant::ApplyExpressDetails).not_to have_received(:new)
+        end
+
+        it 'settles the capture on the retry' do
+          confirm_twice
+
+          expect([payment_session.reload.status, payments_on_cart.sole.amount]).to eq(['completed', due])
+        end
       end
     end
   end
