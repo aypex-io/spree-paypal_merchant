@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+### Documentation
+
+- The README says what Spree 6.0.4 changes for PayPal's webhook. A
+  `COMPLETED` event that arrives after the storefront's confirm call now places
+  a cart that nothing else placed, and a failed settlement is retried (five
+  times by Spree's job, then by the queue backend) instead of dropped
+  ([spree/spree#15133](https://github.com/spree/spree/pull/15133)). Both known
+  limitations still apply before 6.0.4.
+
 ## 6.1.0
 
 ### Added
