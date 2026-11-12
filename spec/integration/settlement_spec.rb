@@ -39,6 +39,7 @@ RSpec.describe 'PayPal settlement through confirm and webhook' do
   end
 
   # What the webhook controller's job does once a delivery has been parsed.
+  # Returns the workflow's result: from Spree 6.0.4 the job itself returns nil.
   def deliver_webhook(event_type)
     result = gateway.parse_webhook_event(webhook_body(event_type), {})
     return if result.nil?
@@ -46,6 +47,7 @@ RSpec.describe 'PayPal settlement through confirm and webhook' do
     Spree::Payments::HandleWebhookJob.perform_now(
       payment_method_id: gateway.id, action: result[:action].to_s, payment_session_id: result[:payment_session].id
     )
+    workflow_results.last
   end
 
   # Runs the webhook workflow on a session loaded afresh, as the job loads it:
@@ -85,11 +87,15 @@ RSpec.describe 'PayPal settlement through confirm and webhook' do
                                              external_id: captured['id'], external_data: created)
   end
 
+  let(:workflow_results) { [] }
+
   before do
     # Any copy of the gateway, such as the one a job loads, talks to this client.
     allow(PaypalServerSdk::Client).to receive(:new).and_return(instance_double(PaypalServerSdk::Client, orders: orders_api))
     allow(orders_api).to receive_messages(get_order: paypal_response(captured), capture_order: paypal_response(captured))
-    allow(Spree.payments_handle_webhook_workflow).to receive(:call).and_call_original
+    allow(Spree.payments_handle_webhook_workflow).to receive(:call).and_wrap_original do |original, *args, **kwargs|
+      original.call(*args, **kwargs).tap { |result| workflow_results << result }
+    end
   end
 
   shared_examples 'a placed cart paid once' do
@@ -177,7 +183,9 @@ RSpec.describe 'PayPal settlement through confirm and webhook' do
     end
 
     # The stored capture is COMPLETED, so the webhook needs no PayPal read, and
-    # core finds the payment completed and leaves it alone.
+    # core finds the payment completed and leaves it alone. From Spree 6.0.4
+    # (spree/spree#15133) core still places the cart, since nothing has; earlier
+    # 6.0 releases leave that to the storefront's Carts::Complete.
     context 'when the webhook then arrives' do
       let!(:payment_updated_at) { payments.sole.updated_at }
       let!(:webhook_result) { deliver_webhook('PAYMENT.CAPTURE.COMPLETED') }
@@ -202,8 +210,12 @@ RSpec.describe 'PayPal settlement through confirm and webhook' do
         expect(payments.sole.updated_at).to eq(payment_updated_at)
       end
 
-      it 'leaves the cart for the storefront to place' do
-        expect(cart.reload.order).to be_nil
+      if Gem::Version.new(Spree.version) >= Gem::Version.new('6.0.4')
+        it_behaves_like 'a placed cart paid once'
+      else
+        it 'leaves the cart for the storefront to place' do
+          expect(cart.reload.order).to be_nil
+        end
       end
     end
 

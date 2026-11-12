@@ -35,8 +35,9 @@ releases, on the `5-2-stable` branch.
   it is refused: the storefront creates a new session instead. The payment
   records the amount PayPal captured.
 - The storefront's confirm call and PayPal's webhook settle through the same
-  Spree path, in either order. Whichever arrives first creates the payment; the
-  other changes nothing.
+  Spree path, in either order. Whichever arrives first creates the payment, and
+  the other never creates a second one. On Spree 6.0.4 and later, a webhook
+  that arrives second still places the cart if nothing has placed it yet.
 - Amount breakdown sends **only `additional_tax_total`**. Sending full
   `tax_total` double-counts included VAT and trips PayPal `AMOUNT_MISMATCH`.
 - Talks to PayPal via the official
@@ -238,11 +239,15 @@ Bump the gem to `~> 6.0` as part of your Spree 6 upgrade.
 
 Three things to know before you cut over:
 
-1. **Webhooks are one-shot.** Spree 6 settles a payment webhook in a
-   background job and does not retry a failed one. PayPal does not send it
-   again, because Spree already answered 200. If the gem cannot read PayPal's
-   order, or the order shows no completed, pending or partly refunded capture,
-   that event is dropped. The storefront's confirm step, or a later PayPal event, settles the
+1. **Webhooks are one-shot before Spree 6.0.4.** Spree 6 settles a payment
+   webhook in a background job. PayPal does not send it again, because Spree
+   already answered 200. If the gem cannot read PayPal's order, or the order
+   shows no completed, pending or partly refunded capture, settling fails.
+   Before 6.0.4 that event is dropped at once. From 6.0.4, Spree's job retries
+   it five times with backoff and then raises, so the queue backend's own
+   retries apply too (Sidekiq's default is 25 more over about three weeks). A
+   capture PayPal declined is then read, and reported as an error, on every
+   attempt. The storefront's confirm step, or a later PayPal event, settles the
    payment instead.
 2. **Check PayPal for captures still pending** (an eCheck, say). Under 5.x a
    pending capture was recorded as a completed payment. After the upgrade the
@@ -266,14 +271,20 @@ log at `info` leaves them out. To see them, set the log level to `debug`.
   with two decimals, so those currencies aren't supported.
 - Multi-seller checkouts, where one payment covers several orders, aren't
   tested.
-- If the storefront confirms the payment but never completes the cart (the
-  buyer closes the tab between the two calls), PayPal's later `COMPLETED`
-  event doesn't place the cart. That is Spree's design: a webhook places the
-  cart only when it is what settles the payment. The payment sits on an
-  unplaced cart, and the order has to be placed by hand.
+- **Before Spree 6.0.4:** if the storefront confirms the payment but never
+  completes the cart (the buyer closes the tab between the two calls), PayPal's
+  later `COMPLETED` event doesn't place the cart. Spree's webhook placed a cart
+  only when it was what settled the payment, so the payment sits on an unplaced
+  cart and the order has to be placed by hand. Spree 6.0.4 places the cart from
+  that event ([spree/spree#15133](https://github.com/spree/spree/pull/15133)).
 - If the webhook settles first and completing the cart then fails (stock, a
-  validation, tax), Spree rolls the payment back with it, and the one-shot event
-  is dropped. The storefront's confirm call settles the payment instead.
+  validation, tax), Spree rolls the payment back with it. Before Spree 6.0.4 the
+  one-shot event is then dropped. From 6.0.4 it is retried: five times by
+  Spree's job, then by the queue backend (see "Webhooks are one-shot before
+  Spree 6.0.4" above). That recovers a passing failure such as a lock timeout.
+  A lasting one, such as stock, keeps failing until the retries run out, and a
+  late retry can place the cart once the cause is gone. Either way, the
+  storefront's confirm call settles the payment instead.
 
 ## Developing
 
